@@ -1,0 +1,41 @@
+name: Bug report
+description: Something does not work as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a problem. Please do not include API keys or other secrets.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: input
+    id: url
+    attributes:
+      label: Source URL
+      description: The web page or PDF you asked about, if the problem is specific to a source.
+      placeholder: https://example.com/article
+  - type: textarea
+    id: question
+    attributes:
+      label: Question and answer
+      description: The question you asked and the answer you got, if relevant.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or error message
+      render: shell
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: v0.1.0 or a commit hash
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [Windows, macOS, Linux, Other]

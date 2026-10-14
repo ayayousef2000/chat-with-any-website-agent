@@ -1,0 +1,31 @@
+name: PR source
+
+# Pull requests into main must come from develop in this repository.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, edited]
+
+permissions: {}
+
+concurrency:
+  group: pr-source-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  allowed-source:
+    name: Allowed source branch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Require develop as the source branch
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
+        run: |
+          if [ "$HEAD_REPO" != "$BASE_REPO" ] || [ "$HEAD_REF" != "develop" ]; then
+            echo "::error::Pull requests into main must come from the develop branch of this repository (got '$HEAD_REPO:$HEAD_REF')."
+            exit 1
+          fi

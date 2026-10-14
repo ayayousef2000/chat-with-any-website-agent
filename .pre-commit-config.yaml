@@ -1,0 +1,119 @@
+# Install once with: uv run pre-commit install
+# Hooks run before every commit; the commit is blocked if any of them fails.
+default_install_hook_types: [pre-commit, commit-msg]
+
+repos:
+  # File hygiene
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=500]
+        # The lockfile is generated and must be committed; it is legitimately larger than the limit.
+        exclude: ^uv\.lock$
+      - id: check-case-conflict
+      - id: check-symlinks
+      - id: debug-statements
+      - id: detect-private-key
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  # Secrets: scans the staged changes for API keys, tokens and credentials.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.0
+    hooks:
+      - id: gitleaks
+
+  # Conventional Commits: type(scope): description
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v4.4.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+        args: [feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert]
+
+  # GitHub configuration: the same files CI and GitHub read, checked against their published schemas.
+  - repo: https://github.com/python-jsonschema/check-jsonschema
+    rev: 0.38.2
+    hooks:
+      - id: check-github-workflows
+      - id: check-dependabot
+      - id: check-github-issue-config
+      - id: check-github-issue-forms
+
+  # Workflow security audit (the same tool and version as the "Workflow security" job in CI).
+  - repo: https://github.com/zizmorcore/zizmor-pre-commit
+    rev: v1.30.1
+    hooks:
+      - id: zizmor
+        args: [--no-progress, --offline]
+
+  # uv: the lockfile must match pyproject.toml, and the locked dependencies must have no known vulnerabilities.
+  # Both run only when pyproject.toml or uv.lock is part of the commit. The audit needs the network.
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 0.13.1
+    hooks:
+      - id: uv-lock
+        args: [--check]
+      - id: uv-audit
+
+  - repo: local
+    hooks:
+      - id: block-env-files
+        name: block .env files
+        description: Environment files hold secrets and must never be committed (.env.example is fine).
+        language: fail
+        entry: Do not commit .env files. Keep secrets local; document variables in .env.example.
+        files: (^|/)\.env(\.(?!example$).+)?$
+
+      - id: block-private-files
+        name: block private local files
+        description: The assistant instructions and the private planning documents stay on this machine.
+        language: fail
+        entry: Do not commit private local files. They stay git-ignored.
+        files: ^(CLAUDE(\.local)?\.md|\.claude/|docs/)
+
+      # Files that reach GitHub must not mention AI tools or AI assistance.
+      - id: no-ai-mentions
+        name: no mention of AI tools in public files
+        language: pygrep
+        entry: (?i)claude|anthropic|\bAI[- ](assisted|assistance|generated)
+        types: [text]
+        # .gitignore lists the private local files by name; this file holds the pattern; uv.lock lists package names.
+        exclude: ^(\.gitignore|\.pre-commit-config\.yaml|uv\.lock)$
+
+      - id: no-ai-mentions-in-commit-message
+        name: no mention of AI tools in the commit message
+        language: pygrep
+        entry: (?i)claude|anthropic|\bAI[- ](assisted|assistance|generated)
+        stages: [commit-msg]
+
+      # Same as the "Compile" step in CI.
+      - id: compile
+        name: compile (python -m compileall)
+        language: system
+        entry: uv run python -m compileall -q chat_with_any_website_agent tests
+        pass_filenames: false
+        types: [python]
+
+      # Same as the "Build" job in CI: the package must build.
+      - id: build
+        name: build (uv build)
+        language: system
+        entry: uv build
+        pass_filenames: false
+        files: ^(pyproject\.toml|README\.md|LICENSE|chat_with_any_website_agent/.+)$
+
+      # Type-check, lint, format check and tests in one command.
+      - id: check
+        name: check (types, lint, format, tests)
+        language: system
+        entry: uv run poe check
+        pass_filenames: false
+        always_run: true

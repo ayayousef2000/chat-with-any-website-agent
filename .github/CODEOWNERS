@@ -1,0 +1,9 @@
+# Code owners are requested for review automatically.
+* @ayayousef2000
+
+# Repository automation and security-sensitive files
+/.github/ @ayayousef2000
+/.pre-commit-config.yaml @ayayousef2000
+/pyproject.toml @ayayousef2000
+/uv.lock @ayayousef2000
+/SECURITY.md @ayayousef2000

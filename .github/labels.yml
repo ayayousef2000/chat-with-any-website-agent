@@ -1,0 +1,62 @@
+# Source of truth for the repository labels (synced by .github/workflows/labels.yml).
+
+- name: bug
+  color: d73a4a
+  description: Something is not working
+- name: enhancement
+  color: a2eeef
+  description: New feature or improvement
+- name: documentation
+  color: 0075ca
+  description: Improvements or additions to documentation
+- name: question
+  color: d876e3
+  description: Further information is requested
+- name: security
+  color: b60205
+  description: Security-related change or report
+- name: performance
+  color: fbca04
+  description: Speed or resource usage
+- name: refactor
+  color: c5def5
+  description: Code change that neither fixes a bug nor adds a feature
+- name: tests
+  color: bfd4f2
+  description: Adding or improving tests
+- name: ci
+  color: ededed
+  description: Continuous integration and repository automation
+- name: dependencies
+  color: 0366d6
+  description: Dependency updates
+- name: python
+  color: 3572a5
+  description: Python dependency or code update
+- name: github_actions
+  color: 000000
+  description: GitHub Actions update
+- name: pre-commit
+  color: fab005
+  description: Pre-commit hook update
+- name: breaking-change
+  color: e11d21
+  description: Changes that break backwards compatibility
+- name: good first issue
+  color: 7057ff
+  description: Good for newcomers
+- name: help wanted
+  color: 008672
+  description: Extra attention is needed
+- name: duplicate
+  color: cfd3d7
+  description: This issue or pull request already exists
+- name: invalid
+  color: e4e669
+  description: This does not seem right
+- name: wontfix
+  color: ffffff
+  description: This will not be worked on
+- name: skip-changelog
+  color: eeeeee
+  description: Leave out of the release notes
