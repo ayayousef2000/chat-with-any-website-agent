@@ -8,8 +8,10 @@ on:
 
 permissions: {}
 
+# The group includes the commit: a run is only cancelled by another run for the same commit, never by an event
+# for an older one, so the required check always reports on the newest commit.
 concurrency:
-  group: pr-source-${{ github.event.pull_request.number }}
+  group: pr-source-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
   cancel-in-progress: true
 
 jobs:
