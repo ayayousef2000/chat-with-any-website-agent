@@ -4,8 +4,10 @@ CLAUDE.local.md
 .claude/
 docs/
 
-# Secrets
+# Secrets (.env.example is the template and stays tracked)
 .env
+.env.*
+!.env.example
 
 # Local state
 data/
@@ -13,11 +15,22 @@ data/
 # Python
 __pycache__/
 *.py[cod]
+*.egg-info/
 .venv/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
 .coverage
-dist/
+.coverage.*
+coverage.xml
 htmlcov/
+build/
+dist/
 eval/results*.json
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.log
