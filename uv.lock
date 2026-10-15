@@ -287,7 +287,6 @@ wheels = [
 
 [[package]]
 name = "chat-with-any-website-agent"
-version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "cohere" },
