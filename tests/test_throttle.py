@@ -79,6 +79,35 @@ def test_a_request_larger_than_the_whole_limit_waits_for_the_window_to_empty() -
     assert throttle.acquire(50) == 60.0
 
 
+def test_a_request_that_fits_is_counted_without_waiting() -> None:
+    throttle, clock = _throttle(100)
+
+    assert throttle.try_acquire(60) is True
+    assert throttle.try_acquire(40) is True
+    assert throttle.try_acquire(1) is False  # the limit is reached, and nothing was waited for
+    assert clock.slept == []
+
+
+def test_a_request_that_does_not_fit_is_not_counted() -> None:
+    throttle, clock = _throttle(100, window=60)
+    throttle.try_acquire(100)
+    clock.now = 30.0
+
+    assert throttle.try_acquire(10) is False
+    clock.now = 60.0
+
+    assert throttle.try_acquire(100) is True  # only the first 100 was counted, and it has left the window
+
+
+def test_units_that_were_used_are_counted_even_beyond_the_limit() -> None:
+    throttle, clock = _throttle(100, window=60)
+    throttle.acquire(10)
+    throttle.record(150)  # the real use of the request turned out to be much more than the estimate
+
+    assert throttle.acquire(10) == 60.0
+    assert clock.now == 60.0
+
+
 @pytest.mark.parametrize(("limit", "window"), [(0, 60.0), (-1, 60.0), (5, 0.0), (5, -1.0)])
 def test_a_limit_or_window_that_makes_no_sense_is_refused(limit: int, window: float) -> None:
     with pytest.raises(ValueError, match="must be"):

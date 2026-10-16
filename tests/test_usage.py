@@ -64,6 +64,26 @@ def test_tokens_are_counted_and_the_limit_stops_the_run_with_true_totals() -> No
     assert usage.tokens_left(GROQ) == 0
 
 
+def test_a_call_is_refused_before_it_is_sent_once_the_tokens_are_used_up() -> None:
+    usage = UsageCounter(max_tokens={GROQ: 100})
+    usage.ensure_tokens_left(GROQ)  # nothing used yet
+    usage.record_tokens(GROQ, 99)
+    usage.ensure_tokens_left(GROQ)  # one token is left
+
+    usage.record_tokens(GROQ, 1)
+    with pytest.raises(BudgetExceededError) as raised:
+        usage.ensure_tokens_left(GROQ)
+
+    assert (raised.value.service, raised.value.limit) == (GROQ, 100)
+
+
+def test_a_service_without_a_token_limit_is_never_refused() -> None:
+    usage = UsageCounter()
+    usage.record_tokens(GROQ, 10_000_000)
+
+    usage.ensure_tokens_left(GROQ)
+
+
 def test_counting_is_exact_when_several_threads_call_at_once() -> None:
     usage = UsageCounter()
 
