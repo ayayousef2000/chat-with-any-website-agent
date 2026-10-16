@@ -2,6 +2,7 @@ import pytest
 
 from chat_with_any_website_agent.errors import (
     AgentError,
+    BudgetExceededError,
     ExtractionError,
     FetchError,
     InvalidURLError,
@@ -21,3 +22,13 @@ def test_a_busy_service_error_says_how_long_to_wait() -> None:
     assert isinstance(raised, AgentError)
     assert str(raised) == "busy, try again"
     assert raised.retry_after == 12.5
+
+
+def test_a_busy_service_error_may_have_no_wait_to_name() -> None:
+    assert ServiceBusyError("busy").retry_after is None
+
+
+def test_a_budget_error_names_the_service_and_the_limit() -> None:
+    raised = BudgetExceededError("limit reached", service="cohere", limit=300)
+    assert isinstance(raised, AgentError)
+    assert (str(raised), raised.service, raised.limit) == ("limit reached", "cohere", 300)
