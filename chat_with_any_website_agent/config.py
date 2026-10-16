@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     fetch_timeout_seconds: float = Field(default=20.0, gt=0)
     fetch_max_bytes: int = Field(default=5_000_000, gt=0)
     pdf_max_bytes: int = Field(default=10_000_000, ge=0)
+    pdf_max_pages: int = Field(default=100, gt=0)
+    pdf_max_seconds: float = Field(default=30.0, gt=0)  # reading stops after this long, which matters on a slow host
 
     # Limits for one question
     agent_max_steps: int = Field(default=8, gt=0)
