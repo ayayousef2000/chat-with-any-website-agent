@@ -40,6 +40,7 @@ dependencies = [
 
 [project.scripts]
 agent-eval = "chat_with_any_website_agent.evaluation_cli:main"
+agent-smoke = "chat_with_any_website_agent.smoke:main"
 
 [project.urls]
 Homepage = "https://github.com/ayayousef2000/chat-with-any-website-agent"
