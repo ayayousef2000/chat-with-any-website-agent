@@ -91,7 +91,9 @@ runtime-evaluated-base-classes = ["pydantic.BaseModel", "pydantic_settings.BaseS
 runtime-evaluated-decorators = ["langchain_core.tools.tool"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["D", "S101", "S104", "S105", "S106"]  # asserts, and placeholder keys in test data
+"tests/**" = ["D", "S101", "S104", "S105", "S106", "RUF001"]  # asserts, placeholder keys, Arabic and Cyrillic test text
+# The list of "edit" link words is real text in many languages, with look-alike characters on purpose.
+"chat_with_any_website_agent/cleaning.py" = ["RUF001"]
 "eval/**" = ["E402"]
 
 [tool.ruff.format]
