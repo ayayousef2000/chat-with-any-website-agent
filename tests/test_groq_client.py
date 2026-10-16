@@ -263,6 +263,18 @@ def test_a_request_that_waits_continues_with_a_key_that_has_recovered() -> None:
     assert clock.pauses == [10.0]
 
 
+def test_closing_the_client_closes_every_groq_client_that_can_be_closed() -> None:
+    keys = Keys(count=3)
+    closed: list[int] = []
+    for number in (0, 2):  # the second client has no close method at all
+        keys.clients[number].close = lambda number=number: closed.append(number)
+    client, _ = _client(keys)
+
+    client.close()
+
+    assert closed == [0, 2]
+
+
 # --- the pace of each key ---
 
 

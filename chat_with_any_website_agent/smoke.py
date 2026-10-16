@@ -220,7 +220,11 @@ def run_checks(
             for key in settings.groq_keys
         ]
         judge = GroqClient.from_settings(settings, model=settings.eval_judge_model, usage=usage, retrier=retrier)
-        checks.extend(check_groq(keys, judge, settings.eval_judge_model))
+        try:
+            checks.extend(check_groq(keys, judge, settings.eval_judge_model))
+        finally:
+            for chat in (*keys, judge):
+                chat.close()
     return checks
 
 
@@ -243,8 +247,9 @@ def format_report(checks: Sequence[Check], secrets: Sequence[str] = ()) -> str:
     Returns:
         One line for each check, and a last line that says how many passed.
     """
+    name_width = max((len(check.name) for check in checks), default=0) + 2  # as wide as the longest name
     lines = [
-        f"[{'ok' if check.ok else 'FAILED'}]".ljust(10) + f"{check.service:<10}{check.name:<26}{check.detail}"
+        f"{'[ok]' if check.ok else '[FAILED]':<10}{check.service:<10}{check.name:<{name_width}}{check.detail}"
         for check in checks
     ]
     failed = sum(not check.ok for check in checks)
