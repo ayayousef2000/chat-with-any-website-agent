@@ -302,6 +302,19 @@ def test_the_report_has_a_line_for_each_check_and_says_how_many_passed() -> None
     assert format_report([Check("cohere", "embedding", True, "fine")]).endswith("All 1 checks passed.")
 
 
+def test_the_details_line_up_whatever_the_length_of_the_names() -> None:
+    report = format_report(
+        [
+            Check("groq", "key 1", True, "first detail"),
+            Check("groq", "judge model openai/gpt-oss-20b", True, "second detail"),
+        ]
+    )
+
+    first, second = report.splitlines()[:2]
+    assert first.index("first detail") == second.index("second detail")
+    assert "gpt-oss-20b  second detail" in second  # a space is always left after the name
+
+
 def test_a_key_can_never_reach_the_report() -> None:
     report = format_report([Check("groq", "key 1", False, "rejected sk-secret-value")], ["sk-secret-value"])
 
