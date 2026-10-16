@@ -129,12 +129,19 @@ class GroqClient:
 
     @classmethod
     def from_settings(
-        cls, settings: Settings, *, usage: UsageCounter | None = None, retrier: Retrier | None = None
+        cls,
+        settings: Settings,
+        *,
+        model: str | None = None,
+        usage: UsageCounter | None = None,
+        retrier: Retrier | None = None,
     ) -> Self:
         """Create a client for the keys, the model and the pace in the settings.
 
         Args:
             settings: The settings. The main key comes first, then the backup keys, without blanks or repeats.
+            model: The model to ask instead of the one in the settings, for example a judge model. Groq counts the
+                limits for each model, so a client for another model has a pace of its own.
             usage: Counts every call and the tokens of every reply, when given.
             retrier: How to try again after a limit or an outage.
 
@@ -142,7 +149,7 @@ class GroqClient:
             The client.
         """
         clients = [Groq(api_key=key.get_secret_value(), max_retries=0) for key in settings.groq_keys]
-        return cls(clients, settings.groq_model, settings.groq_tokens_per_minute, usage=usage, retrier=retrier)
+        return cls(clients, model or settings.groq_model, settings.groq_tokens_per_minute, usage=usage, retrier=retrier)
 
     def complete(self, messages: Sequence[Any], **options: Any) -> ChatReply:
         """Send messages to the model and return its reply.
