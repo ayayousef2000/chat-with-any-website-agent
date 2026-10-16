@@ -81,6 +81,22 @@ class UsageCounter:
                     f"The limit of {limit} tokens for {service} has been reached.", service, limit
                 )
 
+    def ensure_tokens_left(self, service: str) -> None:
+        """Refuse a call when the tokens of the service are already used up.
+
+        Args:
+            service: The service that is about to be called.
+
+        Raises:
+            BudgetExceededError: If the service has no tokens left.
+        """
+        with self._lock:
+            limit = self._max_tokens.get(service)
+            if limit is not None and self._tokens[service] >= limit:
+                raise BudgetExceededError(
+                    f"The limit of {limit} tokens for {service} has been reached.", service, limit
+                )
+
     def tokens_left(self, service: str) -> int | None:
         """How many tokens a service may still use, or ``None`` when it has no limit."""
         with self._lock:

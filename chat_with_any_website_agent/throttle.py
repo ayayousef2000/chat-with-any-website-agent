@@ -53,14 +53,42 @@ class Throttle:
         """
         waited = 0.0
         while True:
-            with self._lock:
-                now = self._clock()
-                while self._events and now - self._events[0][0] >= self._window:
-                    self._events.popleft()
-                used = sum(count for _, count in self._events)
-                if not self._events or used + units <= self._limit:
-                    self._events.append((now, units))
-                    return waited
-                wait = max(self._events[0][0] + self._window - now, 0.0)
+            admitted, wait = self._admit(units)
+            if admitted:
+                return waited
             self._sleep(wait)
             waited += wait
+
+    def try_acquire(self, units: int = 1) -> bool:
+        """Count ``units`` if they fit in the window now, without waiting.
+
+        Args:
+            units: How many units the request uses.
+
+        Returns:
+            ``True`` if the units fit and were counted, ``False`` if the caller would have to wait.
+        """
+        return self._admit(units)[0]
+
+    def record(self, units: int) -> None:
+        """Count units that were already used, without waiting and even when they pass the limit.
+
+        This corrects an estimate once the real use of a request is known.
+
+        Args:
+            units: How many more units were used than were counted.
+        """
+        with self._lock:
+            self._events.append((self._clock(), units))
+
+    def _admit(self, units: int) -> tuple[bool, float]:
+        """Count the units if they fit now; otherwise say how long until the oldest use leaves the window."""
+        with self._lock:
+            now = self._clock()
+            while self._events and now - self._events[0][0] >= self._window:
+                self._events.popleft()
+            used = sum(count for _, count in self._events)
+            if not self._events or used + units <= self._limit:
+                self._events.append((now, units))
+                return True, 0.0
+            return False, max(self._events[0][0] + self._window - now, 0.0)
