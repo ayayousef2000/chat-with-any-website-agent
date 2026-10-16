@@ -7,10 +7,11 @@ from chat_with_any_website_agent.errors import (
     FetchError,
     InvalidURLError,
     ServiceBusyError,
+    StoreError,
 )
 
 
-@pytest.mark.parametrize("error", [InvalidURLError, FetchError, ExtractionError])
+@pytest.mark.parametrize("error", [InvalidURLError, FetchError, ExtractionError, StoreError])
 def test_specific_errors_are_agent_errors_with_a_readable_message(error: type[AgentError]) -> None:
     raised = error("could not read the page")
     assert isinstance(raised, AgentError)

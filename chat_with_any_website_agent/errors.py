@@ -17,6 +17,10 @@ class ExtractionError(AgentError):
     """The source was downloaded but has no readable text."""
 
 
+class StoreError(AgentError):
+    """The vector store is set up in a way that cannot be used, or refused to store something."""
+
+
 class ServiceBusyError(AgentError):
     """A service said "too many requests" or is briefly unavailable, and the retries are used up.
 
