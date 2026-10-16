@@ -43,6 +43,8 @@ def test_default_fetch_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.fetch_timeout_seconds == 20.0
     assert settings.fetch_max_bytes == 5_000_000
     assert settings.pdf_max_bytes == 10_000_000
+    assert settings.pdf_max_pages == 100
+    assert settings.pdf_max_seconds == 30.0
 
 
 def test_pdf_support_can_be_switched_off_with_zero(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -98,6 +100,8 @@ def test_keys_do_not_appear_in_the_text_form_of_the_settings(monkeypatch: pytest
         "WEAVIATE_INIT_TIMEOUT_SECONDS",
         "FETCH_TIMEOUT_SECONDS",
         "FETCH_MAX_BYTES",
+        "PDF_MAX_PAGES",
+        "PDF_MAX_SECONDS",
         "GROQ_TOKENS_PER_MINUTE",
         "AGENT_MAX_STEPS",
         "AGENT_MAX_LLM_CALLS",
