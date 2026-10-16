@@ -31,6 +31,7 @@ def test_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.cohere_embed_model == "embed-v5.0-pro"
     assert settings.cohere_embed_dimension == 1024
     assert settings.cohere_rerank_model == "rerank-v4.0-fast"
+    assert settings.cohere_rerank_requests_per_minute == 10
     assert settings.weaviate_collection == "WebsiteChunk"
     assert settings.weaviate_tenant == "development"
     assert settings.weaviate_init_timeout_seconds == 30
@@ -100,6 +101,7 @@ def test_keys_do_not_appear_in_the_text_form_of_the_settings(monkeypatch: pytest
         "WEAVIATE_INIT_TIMEOUT_SECONDS",
         "FETCH_TIMEOUT_SECONDS",
         "FETCH_MAX_BYTES",
+        "COHERE_RERANK_REQUESTS_PER_MINUTE",
         "PDF_MAX_PAGES",
         "PDF_MAX_SECONDS",
         "GROQ_TOKENS_PER_MINUTE",

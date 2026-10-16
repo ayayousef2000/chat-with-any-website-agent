@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     cohere_embed_model: str = "embed-v5.0-pro"
     cohere_embed_dimension: int = 1024
     cohere_rerank_model: str = "rerank-v4.0-fast"
+    cohere_rerank_requests_per_minute: int = Field(default=10, gt=0)
 
     # Vector database (Weaviate Cloud). One collection holds a tenant for each environment.
     weaviate_url: str
