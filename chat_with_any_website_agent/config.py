@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     eval_max_cohere_calls: int = Field(default=300, gt=0)
     eval_max_groq_calls: int = Field(default=200, gt=0)
     eval_max_groq_tokens: int = Field(default=120_000, gt=0)
+    eval_judge_model: str = "openai/gpt-oss-20b"
 
     @property
     def groq_keys(self) -> tuple[SecretStr, ...]:

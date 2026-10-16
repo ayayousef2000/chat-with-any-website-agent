@@ -38,6 +38,9 @@ dependencies = [
     "weaviate-client>=4.23.1",
 ]
 
+[project.scripts]
+agent-eval = "chat_with_any_website_agent.evaluation_cli:main"
+
 [project.urls]
 Homepage = "https://github.com/ayayousef2000/chat-with-any-website-agent"
 Repository = "https://github.com/ayayousef2000/chat-with-any-website-agent"

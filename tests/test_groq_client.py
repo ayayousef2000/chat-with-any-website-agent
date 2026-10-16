@@ -435,3 +435,8 @@ def test_the_client_is_built_from_the_settings_with_one_groq_client_per_key(monk
     assert [instance.kwargs for instance in created] == expected
     assert client.complete(MESSAGES).text == "hello"
     assert created[0].sent["model"] == "openai/gpt-oss-120b"
+
+    judge = GroqClient.from_settings(settings, model="judge-model")  # another model, for example a judge
+
+    assert judge.complete(MESSAGES).text == "hello"
+    assert created[3].sent["model"] == "judge-model"  # the first key of the second client

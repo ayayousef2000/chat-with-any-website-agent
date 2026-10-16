@@ -17,6 +17,10 @@ class ExtractionError(AgentError):
     """The source was downloaded but has no readable text."""
 
 
+class DatasetError(AgentError):
+    """A question set or a results file is not in the expected format."""
+
+
 class StoreError(AgentError):
     """The vector store is set up in a way that cannot be used, or refused to store something."""
 

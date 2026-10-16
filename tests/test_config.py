@@ -63,6 +63,7 @@ def test_default_limits(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.eval_max_cohere_calls == 300
     assert settings.eval_max_groq_calls == 200
     assert settings.eval_max_groq_tokens == 120_000
+    assert settings.eval_judge_model == "openai/gpt-oss-20b"
 
 
 def test_overrides_come_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
