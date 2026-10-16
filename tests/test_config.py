@@ -38,6 +38,19 @@ def test_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.groq_tokens_per_minute == 8000
 
 
+def test_default_fetch_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings(monkeypatch)
+    assert settings.fetch_timeout_seconds == 20.0
+    assert settings.fetch_max_bytes == 5_000_000
+    assert settings.pdf_max_bytes == 10_000_000
+
+
+def test_pdf_support_can_be_switched_off_with_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert _settings(monkeypatch, PDF_MAX_BYTES="0").pdf_max_bytes == 0
+    with pytest.raises(ValidationError):
+        _settings(monkeypatch, PDF_MAX_BYTES="-1")
+
+
 def test_default_limits(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = _settings(monkeypatch)
     assert settings.agent_max_steps == 8
@@ -83,6 +96,8 @@ def test_keys_do_not_appear_in_the_text_form_of_the_settings(monkeypatch: pytest
     "name",
     [
         "WEAVIATE_INIT_TIMEOUT_SECONDS",
+        "FETCH_TIMEOUT_SECONDS",
+        "FETCH_MAX_BYTES",
         "GROQ_TOKENS_PER_MINUTE",
         "AGENT_MAX_STEPS",
         "AGENT_MAX_LLM_CALLS",

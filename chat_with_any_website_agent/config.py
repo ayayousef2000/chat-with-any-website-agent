@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     groq_model: str = "openai/gpt-oss-120b"
     groq_tokens_per_minute: int = Field(default=8000, gt=0)
 
+    # Fetching. A PDF file is accepted up to pdf_max_bytes; 0 switches PDF support off.
+    fetch_timeout_seconds: float = Field(default=20.0, gt=0)
+    fetch_max_bytes: int = Field(default=5_000_000, gt=0)
+    pdf_max_bytes: int = Field(default=10_000_000, ge=0)
+
     # Limits for one question
     agent_max_steps: int = Field(default=8, gt=0)
     agent_max_link_hops: int = Field(default=3, ge=0)
