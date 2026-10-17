@@ -18,7 +18,7 @@ from pydantic import ValidationError
 from weaviate.classes.init import AdditionalConfig, Auth, Timeout
 
 from chat_with_any_website_agent.cohere_support import COHERE_RETRYABLE
-from chat_with_any_website_agent.config import get_settings
+from chat_with_any_website_agent.config import describe_validation_error, get_settings
 from chat_with_any_website_agent.embeddings import CohereEmbedder
 from chat_with_any_website_agent.groq_client import GROQ_RETRYABLE, GroqClient
 from chat_with_any_website_agent.reranking import CohereReranker
@@ -319,12 +319,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         settings = get_settings()
     except ValidationError as error:
-        # Only the names and the reasons are shown, never the values.
-        problems = "; ".join(
-            f"{'.'.join(str(part) for part in item['loc']).upper() or 'SETTINGS'}: {item['msg']}"
-            for item in error.errors()
-        )
-        _say(f"The settings are not valid ({problems}). Fill in .env first.", error=True)
+        _say(f"The settings are not valid ({describe_validation_error(error)}). Fill in .env first.", error=True)
         return 2
     _say(describe_plan(settings, args.only, prepare=args.prepare))
     if args.dry_run:

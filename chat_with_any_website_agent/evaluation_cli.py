@@ -15,8 +15,7 @@ from chat_with_any_website_agent.config import get_settings
 from chat_with_any_website_agent.errors import DatasetError
 from chat_with_any_website_agent.evaluation import evaluation_usage, load_cases, load_results, run_and_save
 from chat_with_any_website_agent.evaluation_summary import format_summary, summarize
-from chat_with_any_website_agent.groq_client import GROQ_RETRYABLE, GroqClient
-from chat_with_any_website_agent.retrying import Retrier, RetryPolicy
+from chat_with_any_website_agent.groq_client import GroqClient, patient_retrier
 from chat_with_any_website_agent.systems import SYSTEMS
 
 if TYPE_CHECKING:
@@ -105,12 +104,7 @@ def _run(args: argparse.Namespace) -> int:
     settings = get_settings()
     usage = evaluation_usage(settings)
     # The judge is patient: a run is allowed to wait for a limit to lift.
-    judge = GroqClient.from_settings(
-        settings,
-        model=settings.eval_judge_model,
-        usage=usage,
-        retrier=Retrier(GROQ_RETRYABLE, RetryPolicy(attempts=5, max_delay=60.0, budget=240.0)),
-    )
+    judge = GroqClient.from_settings(settings, model=settings.eval_judge_model, usage=usage, retrier=patient_retrier())
     system = factory(settings, usage)
     try:
         report = run_and_save(system, cases, judge, usage, out=args.out, resume=args.resume, limit=args.limit)

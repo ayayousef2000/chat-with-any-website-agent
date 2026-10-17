@@ -1,0 +1,153 @@
+"""Tests of the agent as a system for the evaluation, with fakes instead of the agent and the services."""
+
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, cast
+
+import pytest
+
+from chat_with_any_website_agent import agent_system
+from chat_with_any_website_agent.agent_system import AgentSystem, create_agent_system
+from chat_with_any_website_agent.errors import ExtractionError, FetchError, InvalidURLError, ServiceBusyError
+from chat_with_any_website_agent.evaluation import Case, Outcome
+from chat_with_any_website_agent.graph import AgentAnswer
+from chat_with_any_website_agent.groq_client import GROQ_RETRYABLE
+from chat_with_any_website_agent.ingest import IngestResult
+from chat_with_any_website_agent.retrying import Retrier
+from chat_with_any_website_agent.systems import SYSTEMS
+from chat_with_any_website_agent.usage import UsageCounter
+
+if TYPE_CHECKING:
+    from chat_with_any_website_agent.wiring import AgentRuntime
+
+URL = "https://docs.example/control"
+OTHER = "https://docs.example/data"
+
+
+class FakeIngestor:
+    """Stores nothing; it normalizes the address by adding a slash and can fail for some of them."""
+
+    def __init__(self, failures: dict[str, BaseException] | None = None) -> None:
+        self.failures = failures or {}
+        self.ingested: list[str] = []
+
+    def ingest(self, url: str) -> IngestResult:
+        self.ingested.append(url)
+        if url in self.failures:
+            raise self.failures[url]
+        return IngestResult(url=f"{url}/", reused=True)
+
+
+class FakeAgent:
+    """Answers every question the same way and records what it was asked."""
+
+    def __init__(self) -> None:
+        self.asked: list[tuple[str, list[str]]] = []
+
+    def ask(self, question: str, urls: list[str]) -> AgentAnswer:
+        self.asked.append((question, urls))
+        return AgentAnswer(
+            answer="The answer [1].", abstained=False, excerpts=("An excerpt.",), sources=(f"{URL}/",), llm_calls=2
+        )
+
+
+def _system(ingestor: FakeIngestor | None = None) -> tuple[AgentSystem, FakeIngestor, FakeAgent, list[str]]:
+    fake_ingestor = ingestor or FakeIngestor()
+    agent = FakeAgent()
+    closed: list[str] = []
+    runtime = SimpleNamespace(ingestor=fake_ingestor, agent=agent, close=lambda: closed.append("closed"))
+    return AgentSystem(cast("AgentRuntime", runtime)), fake_ingestor, agent, closed
+
+
+def test_a_question_is_answered_about_its_source_and_the_sources_it_names() -> None:
+    system, ingestor, agent, _ = _system()
+    case = Case(url=URL, question="Which one?", sources=(OTHER,))
+
+    outcome = system.ask(case)
+
+    assert ingestor.ingested == [URL, OTHER]
+    assert agent.asked == [("Which one?", [f"{URL}/", f"{OTHER}/"])]  # the normalized addresses, in order
+    assert outcome == Outcome(answer="The answer [1].", excerpts=("An excerpt.",), sources=(f"{URL}/",))
+
+
+def test_a_source_that_cannot_be_loaded_is_a_failed_answer_and_not_an_error() -> None:
+    failure = FetchError("The page could not be downloaded.")
+    system, _, agent, _ = _system(FakeIngestor({URL: failure}))
+
+    outcome = system.ask(Case(url=URL, question="Q?"))
+
+    assert outcome == Outcome(answer="The source could not be loaded: The page could not be downloaded.")
+    assert agent.asked == []
+
+
+@pytest.mark.parametrize("error", [InvalidURLError("bad address"), ExtractionError("no text")])
+def test_every_way_a_source_can_be_unreadable_is_a_failed_answer(error: BaseException) -> None:
+    system, _, _, _ = _system(FakeIngestor({URL: error}))
+
+    assert system.ask(Case(url=URL, question="Q?")).answer.startswith("The source could not be loaded")
+
+
+def test_a_second_source_that_cannot_be_loaded_fails_the_question() -> None:
+    system, _, agent, _ = _system(FakeIngestor({OTHER: FetchError("gone")}))
+
+    outcome = system.ask(Case(url=URL, question="Q?", sources=(OTHER,)))
+
+    assert outcome.answer == "The source could not be loaded: gone"
+    assert agent.asked == []
+
+
+def test_a_busy_service_stops_the_run_instead_of_being_recorded() -> None:
+    busy = ServiceBusyError("Cohere is busy.", retry_after=30.0)
+    system, _, _, _ = _system(FakeIngestor({URL: busy}))
+
+    with pytest.raises(ServiceBusyError):
+        system.ask(Case(url=URL, question="Q?"))
+    with pytest.raises(ServiceBusyError):
+        system.prepare(URL)
+
+
+def test_preparing_a_source_loads_it() -> None:
+    system, ingestor, _, _ = _system()
+
+    system.prepare(URL)
+
+    assert ingestor.ingested == [URL]
+
+
+def test_a_source_that_cannot_be_prepared_does_not_stop_the_run() -> None:
+    system, _, _, _ = _system(FakeIngestor({URL: FetchError("gone")}))
+
+    system.prepare(URL)  # the question about it will report the problem
+
+
+def test_closing_the_system_closes_the_runtime() -> None:
+    system, _, _, closed = _system()
+
+    system.close()
+
+    assert closed == ["closed"]
+
+
+def test_the_agent_is_registered_for_the_evaluation() -> None:
+    assert SYSTEMS["agent"] is create_agent_system
+
+
+def test_the_system_for_a_run_is_built_with_a_patient_retrier(monkeypatch: pytest.MonkeyPatch) -> None:
+    built: list[dict[str, Any]] = []
+    runtime = SimpleNamespace(ingestor=FakeIngestor(), agent=FakeAgent(), close=lambda: None)
+
+    def fake_build_runtime(settings: object, usage: UsageCounter, **options: Any) -> SimpleNamespace:
+        built.append({"settings": settings, "usage": usage, **options})
+        return runtime
+
+    monkeypatch.setattr(agent_system, "build_runtime", fake_build_runtime)
+    usage, settings = UsageCounter(), object()
+
+    system = create_agent_system(cast("Any", settings), usage)
+
+    assert isinstance(system, AgentSystem)
+    (call,) = built
+    assert call["settings"] is settings
+    assert call["usage"] is usage
+    assert isinstance(call["retrier"], Retrier)
+    assert call["retrier"].retryable == GROQ_RETRYABLE
+    assert call["retrier"].policy.budget > 45.0
