@@ -120,6 +120,12 @@ def test_a_reply_without_usage_information_counts_no_tokens() -> None:
     assert client.complete(MESSAGES).total_tokens == 0
 
 
+def test_the_client_names_the_model_it_asks() -> None:
+    client, _ = _client(Keys())
+
+    assert client.model == "model-x"
+
+
 def test_at_least_one_client_is_needed() -> None:
     with pytest.raises(ValueError, match="at least one"):
         GroqClient([], "model-x", 1000)
