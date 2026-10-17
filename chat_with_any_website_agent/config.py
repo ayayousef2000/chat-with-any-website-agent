@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     pdf_max_seconds: float = Field(default=30.0, gt=0)  # reading stops after this long, which matters on a slow host
 
     # Limits for one question
-    agent_max_steps: int = Field(default=8, gt=0)
+    agent_max_steps: int = Field(default=12, gt=0)  # the most graph nodes run for one question
     agent_max_link_hops: int = Field(default=3, ge=0)
     agent_max_llm_calls: int = Field(default=8, gt=0)
     agent_max_rewrites: int = Field(default=2, ge=0)
