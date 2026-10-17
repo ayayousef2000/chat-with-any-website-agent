@@ -151,6 +151,11 @@ class GroqClient:
         clients = [Groq(api_key=key.get_secret_value(), max_retries=0) for key in settings.groq_keys]
         return cls(clients, model or settings.groq_model, settings.groq_tokens_per_minute, usage=usage, retrier=retrier)
 
+    @property
+    def model(self) -> str:
+        """The model this client asks."""
+        return self._model
+
     def close(self) -> None:
         """Close the connections of the Groq clients, for example when a short command is done."""
         for client in self._clients:
