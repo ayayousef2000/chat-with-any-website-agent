@@ -89,9 +89,10 @@ ignore = [
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
-# Pydantic and LangChain read annotations at run time, so their imports must stay real imports.
+# Pydantic, LangChain and LangGraph (which reads the keys of a state class) read annotations at run time, so their
+# imports must stay real imports.
 [tool.ruff.lint.flake8-type-checking]
-runtime-evaluated-base-classes = ["pydantic.BaseModel", "pydantic_settings.BaseSettings"]
+runtime-evaluated-base-classes = ["pydantic.BaseModel", "pydantic_settings.BaseSettings", "typing.TypedDict"]
 runtime-evaluated-decorators = ["langchain_core.tools.tool"]
 
 [tool.ruff.lint.per-file-ignores]
