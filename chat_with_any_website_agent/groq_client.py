@@ -20,7 +20,7 @@ import groq
 from groq import Groq
 
 from chat_with_any_website_agent.errors import BudgetExceededError
-from chat_with_any_website_agent.retrying import Retrier, retry_after_seconds
+from chat_with_any_website_agent.retrying import Retrier, RetryPolicy, retry_after_seconds
 from chat_with_any_website_agent.throttle import Throttle
 from chat_with_any_website_agent.usage import GROQ
 
@@ -48,6 +48,11 @@ DEFAULT_REST_SECONDS = 60.0
 # reports afterwards corrects the count.
 CHARS_PER_TOKEN = 3
 DEFAULT_OUTPUT_TOKENS = 1024
+
+
+def patient_retrier() -> Retrier:
+    """A retrier for a run that may wait for a limit to lift, such as an evaluation, instead of a person who waits."""
+    return Retrier(GROQ_RETRYABLE, RetryPolicy(attempts=5, max_delay=60.0, budget=240.0))
 
 
 @dataclass(frozen=True)

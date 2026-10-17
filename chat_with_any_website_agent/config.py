@@ -3,7 +3,7 @@
 from functools import lru_cache
 from typing import Self
 
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # The output sizes that Cohere's Embed v5 models support.
@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     groq_api_key: SecretStr
     groq_backup_api_keys: SecretStr = SecretStr("")
     groq_model: str = "openai/gpt-oss-120b"
+    groq_grade_model: str = "openai/gpt-oss-20b"  # grades the excerpts and rewrites the query; has its own limits
     groq_tokens_per_minute: int = Field(default=8000, gt=0)
 
     # Fetching. A PDF file is accepted up to pdf_max_bytes; 0 switches PDF support off.
@@ -91,6 +92,20 @@ class Settings(BaseSettings):
             if not getattr(self, name).get_secret_value().strip():
                 raise ValueError(f"{name.upper()} must not be empty")
         return self
+
+
+def describe_validation_error(error: ValidationError) -> str:
+    """Name each setting that is missing or invalid and say why, without showing any value.
+
+    Args:
+        error: The error raised when the settings were loaded.
+
+    Returns:
+        One text with a part for each setting. A key must never reach the output, so values are left out.
+    """
+    return "; ".join(
+        f"{'.'.join(str(part) for part in item['loc']).upper() or 'SETTINGS'}: {item['msg']}" for item in error.errors()
+    )
 
 
 @lru_cache

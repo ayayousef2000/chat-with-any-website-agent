@@ -10,7 +10,13 @@ import pytest
 from chat_with_any_website_agent import groq_client
 from chat_with_any_website_agent.config import Settings
 from chat_with_any_website_agent.errors import BudgetExceededError, ServiceBusyError
-from chat_with_any_website_agent.groq_client import GROQ_RETRYABLE, ChatReply, GroqClient, estimate_tokens
+from chat_with_any_website_agent.groq_client import (
+    GROQ_RETRYABLE,
+    ChatReply,
+    GroqClient,
+    estimate_tokens,
+    patient_retrier,
+)
 from chat_with_any_website_agent.retrying import Retrier, RetryPolicy
 from chat_with_any_website_agent.usage import GROQ, UsageCounter
 
@@ -118,6 +124,14 @@ def test_a_reply_without_usage_information_counts_no_tokens() -> None:
     )
 
     assert client.complete(MESSAGES).total_tokens == 0
+
+
+def test_a_patient_retrier_waits_for_a_limit_to_lift_longer_than_the_default() -> None:
+    retrier = patient_retrier()
+
+    assert retrier.retryable == GROQ_RETRYABLE
+    assert retrier.policy == RetryPolicy(attempts=5, max_delay=60.0, budget=240.0)
+    assert retrier.policy.budget > RetryPolicy().budget
 
 
 def test_the_client_names_the_model_it_asks() -> None:

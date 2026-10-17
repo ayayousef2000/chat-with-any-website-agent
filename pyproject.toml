@@ -39,6 +39,7 @@ dependencies = [
 ]
 
 [project.scripts]
+agent-ask = "chat_with_any_website_agent.ask_cli:main"
 agent-eval = "chat_with_any_website_agent.evaluation_cli:main"
 agent-smoke = "chat_with_any_website_agent.smoke:main"
 

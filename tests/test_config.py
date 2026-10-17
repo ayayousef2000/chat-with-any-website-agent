@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING
 import pytest
 from pydantic import ValidationError
 
-from chat_with_any_website_agent.config import EMBED_DIMENSIONS, Settings, get_settings
+from chat_with_any_website_agent.config import EMBED_DIMENSIONS, Settings, describe_validation_error, get_settings
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -36,6 +36,7 @@ def test_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.weaviate_tenant == "development"
     assert settings.weaviate_init_timeout_seconds == 30
     assert settings.groq_model == "openai/gpt-oss-120b"
+    assert settings.groq_grade_model == "openai/gpt-oss-20b"
     assert settings.groq_tokens_per_minute == 8000
 
 
@@ -84,6 +85,34 @@ def test_missing_required_values_fail() -> None:
 def test_blank_keys_fail_with_the_name_of_the_variable(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
     with pytest.raises(ValidationError, match=name):
         _settings(monkeypatch, **{name: "   "})
+
+
+def test_a_missing_setting_is_described_by_its_name_and_reason() -> None:
+    with pytest.raises(ValidationError) as caught:
+        Settings(_env_file=None)  # type: ignore[call-arg]
+
+    text = describe_validation_error(caught.value)
+
+    assert "COHERE_API_KEY: Field required" in text
+    assert "GROQ_API_KEY: Field required" in text
+
+
+def test_the_description_of_an_invalid_setting_never_shows_a_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ValidationError) as caught:
+        _settings(monkeypatch, COHERE_EMBED_DIMENSION="1000")
+
+    text = describe_validation_error(caught.value)
+
+    assert "COHERE_EMBED_DIMENSION" in text
+    for secret in ("cohere-key", "weaviate-key", "groq-key", "1000"):
+        assert secret not in text
+
+
+def test_a_blank_key_is_described_by_the_name_of_the_variable(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ValidationError) as caught:
+        _settings(monkeypatch, COHERE_API_KEY="   ")
+
+    assert describe_validation_error(caught.value) == "SETTINGS: Value error, COHERE_API_KEY must not be empty"
 
 
 def test_keys_do_not_appear_in_the_text_form_of_the_settings(monkeypatch: pytest.MonkeyPatch) -> None:
