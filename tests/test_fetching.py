@@ -9,7 +9,13 @@ import pytest
 
 from chat_with_any_website_agent import fetching
 from chat_with_any_website_agent.errors import ExtractionError, FetchError, InvalidURLError
-from chat_with_any_website_agent.fetching import fetch_document, normalize_url, resolve_public_addresses
+from chat_with_any_website_agent.fetching import (
+    Validators,
+    fetch_document,
+    fetch_if_changed,
+    normalize_url,
+    resolve_public_addresses,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -254,6 +260,128 @@ def test_the_user_agent_names_the_project(monkeypatch: pytest.MonkeyPatch) -> No
 
     assert received[0].headers["user-agent"] == fetching.USER_AGENT
     assert fetching.PROJECT_URL in fetching.USER_AGENT
+
+
+# --- asking again only if the page changed ---
+
+ETAG = '"v42"'
+MODIFIED = "Wed, 21 Oct 2026 07:28:00 GMT"
+KNOWN = Validators(etag=ETAG, last_modified=MODIFIED)
+
+
+def _versioned(etag: str | None = ETAG, modified: str | None = MODIFIED) -> httpx.Response:
+    headers = {"content-type": "text/html"}
+    if etag is not None:
+        headers["etag"] = etag
+    if modified is not None:
+        headers["last-modified"] = modified
+    return httpx.Response(200, headers=headers, content=PAGE_BODY)
+
+
+def test_the_version_marks_of_a_page_are_returned_with_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    _serve(monkeypatch, lambda request: _versioned())
+
+    document = fetch_document("https://example.com/", timeout=5, max_bytes=1000)
+
+    assert document.validators == KNOWN
+
+
+def test_a_page_without_version_marks_has_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    _serve(monkeypatch, lambda request: _page())
+
+    assert fetch_document("https://example.com/", timeout=5, max_bytes=1000).validators == Validators()
+
+
+def test_version_marks_that_are_too_long_or_blank_are_not_kept(monkeypatch: pytest.MonkeyPatch) -> None:
+    _serve(monkeypatch, lambda request: _versioned(etag="x" * 300, modified="   "))
+
+    assert fetch_document("https://example.com/", timeout=5, max_bytes=1000).validators == Validators()
+
+
+def test_a_conditional_request_carries_the_version_marks_and_a_page_that_did_not_change_is_not_downloaded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _answers(monkeypatch, {"example.com": [PUBLIC]})
+    received = _network(monkeypatch, lambda request: httpx.Response(304))
+
+    result = fetch_if_changed("https://example.com/", KNOWN, timeout=5, max_bytes=1000)
+
+    assert result is None
+    assert received[0].headers["if-none-match"] == ETAG
+    assert received[0].headers["if-modified-since"] == MODIFIED
+
+
+def test_a_page_that_changed_is_downloaded_with_its_new_version_marks(monkeypatch: pytest.MonkeyPatch) -> None:
+    newer = "Thu, 22 Oct 2026 08:00:00 GMT"
+    _serve(monkeypatch, lambda request: _versioned(etag='"v43"', modified=newer))
+
+    document = fetch_if_changed("https://example.com/", KNOWN, timeout=5, max_bytes=1000)
+
+    assert document is not None
+    assert document.body == PAGE_BODY
+    assert document.validators == Validators(etag='"v43"', last_modified=newer)
+
+
+@pytest.mark.parametrize(
+    ("validators", "sent"),
+    [
+        (Validators(etag=ETAG), {"if-none-match"}),
+        (Validators(last_modified=MODIFIED), {"if-modified-since"}),
+        (Validators(), set()),  # nothing is known, so it is an ordinary request
+    ],
+)
+def test_only_the_version_marks_that_are_known_are_sent(
+    monkeypatch: pytest.MonkeyPatch, validators: Validators, sent: set[str]
+) -> None:
+    _answers(monkeypatch, {"example.com": [PUBLIC]})
+    received = _network(monkeypatch, lambda request: _page())
+
+    document = fetch_if_changed("https://example.com/", validators, timeout=5, max_bytes=1000)
+
+    assert document is not None
+    assert {name for name in ("if-none-match", "if-modified-since") if name in received[0].headers} == sent
+
+
+def test_an_answer_of_not_modified_to_an_ordinary_request_is_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    _serve(monkeypatch, lambda request: httpx.Response(304))
+
+    with pytest.raises(FetchError, match="error 304"):
+        fetch_document("https://example.com/", timeout=5, max_bytes=1000)
+
+
+def test_a_not_modified_answer_after_a_redirect_is_still_not_modified(monkeypatch: pytest.MonkeyPatch) -> None:
+    _answers(monkeypatch, {"old.example": [PUBLIC], "new.example": ["93.184.216.35"]})
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.headers["host"] == "old.example":
+            return httpx.Response(301, headers={"location": "https://new.example/moved"})
+        return httpx.Response(304)
+
+    received = _network(monkeypatch, handler)
+
+    assert fetch_if_changed("https://old.example/", KNOWN, timeout=5, max_bytes=1000) is None
+    assert [request.headers["if-none-match"] for request in received] == [ETAG, ETAG]
+
+
+def test_a_conditional_request_gets_the_same_checks_as_any_other(monkeypatch: pytest.MonkeyPatch) -> None:
+    _answers(monkeypatch, {"intranet.example": ["10.0.0.5"]})
+    received = _network(monkeypatch, lambda request: httpx.Response(304))
+
+    with pytest.raises(InvalidURLError):
+        fetch_if_changed("https://intranet.example/", KNOWN, timeout=5, max_bytes=1000)
+
+    assert received == []  # the connection was never made
+
+
+def test_version_marks_are_sent_back_only_when_they_are_safe() -> None:
+    assert Validators(etag=' "v1" ', last_modified=MODIFIED).request_headers() == {
+        "If-None-Match": '"v1"',
+        "If-Modified-Since": MODIFIED,
+    }
+    assert Validators().request_headers() == {}
+    unsafe = Validators(etag="a\nInjected: header", last_modified="x" * 300)  # from storage, so not trusted
+    assert unsafe.request_headers() == {}
+    assert Validators(etag="é").request_headers() == {}  # only plain ASCII is sent
 
 
 # --- redirects ---
