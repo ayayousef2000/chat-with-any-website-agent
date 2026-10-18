@@ -1,19 +1,23 @@
 """Tests of the ingestion of a source, with fakes instead of the network, Cohere and Weaviate."""
 
+import hashlib
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from chat_with_any_website_agent import ingest
+from chat_with_any_website_agent.cleaning import clean_text
 from chat_with_any_website_agent.config import Settings
-from chat_with_any_website_agent.errors import ExtractionError, FetchError, ServiceBusyError
-from chat_with_any_website_agent.fetching import FetchedDocument
+from chat_with_any_website_agent.errors import ExtractionError, FetchError, InvalidURLError, ServiceBusyError
+from chat_with_any_website_agent.extraction import extract_page
+from chat_with_any_website_agent.fetching import FetchedDocument, Validators
 from chat_with_any_website_agent.ingest import IngestResult, SourceIngestor
+from chat_with_any_website_agent.vector_store import SourceRecord
 from tests.pdf_files import make_pdf
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     from chat_with_any_website_agent.vector_store import StoredChunk
 
@@ -36,21 +40,30 @@ class FakeStore:
         stored: set[str] | None = None,
         *,
         keeps_loaded_at: bool = False,
-        loaded: dict[str, datetime] | None = None,
+        keeps_versions: bool = False,
+        records: dict[str, SourceRecord] | None = None,
     ) -> None:
         self.stored = stored or set()
         self.keeps_loaded_at = keeps_loaded_at
-        self.loaded = loaded or {}
+        self.keeps_versions = keeps_versions
+        self.records = records or {}
         self.replaced: list[tuple[str, str, list[StoredChunk]]] = []
+        self.written: list[SourceRecord | None] = []  # the record of each copy that was stored
 
     def has_source(self, url: str) -> bool:
         return url in self.stored
 
-    def loaded_at(self, url: str) -> datetime | None:
-        return self.loaded.get(url)
+    def source_record(self, url: str) -> SourceRecord | None:
+        return self.records.get(url, SourceRecord()) if url in self.stored else None
 
-    def replace_source(self, url: str, title: str, chunks: Sequence[StoredChunk]) -> None:
+    def replace_source(
+        self, url: str, title: str, chunks: Sequence[StoredChunk], record: SourceRecord | None = None
+    ) -> None:
         self.replaced.append((url, title, list(chunks)))
+        self.written.append(record)
+        self.stored.add(url)
+        if record is not None:
+            self.records[url] = record
 
 
 class FakeEmbedder:
@@ -170,8 +183,8 @@ def _aged(
     age: timedelta | None, *, keeps_loaded_at: bool = True, max_age: timedelta | None = WEEK
 ) -> tuple[SourceIngestor, FakeStore, FakeFetch]:
     """An ingestor over a store that holds the source, loaded ``age`` ago (or at an unknown time)."""
-    loaded = {} if age is None else {URL: NOW - age}
-    store, fetch = FakeStore({URL}, keeps_loaded_at=keeps_loaded_at, loaded=loaded), FakeFetch()
+    records = {URL: SourceRecord(loaded_at=None if age is None else NOW - age)}
+    store, fetch = FakeStore({URL}, keeps_loaded_at=keeps_loaded_at, records=records), FakeFetch()
     return _ingestor(store, FakeEmbedder(), fetch, max_age=max_age, now=lambda: NOW), store, fetch
 
 
@@ -261,12 +274,281 @@ def test_the_limit_comes_from_the_settings_and_zero_switches_it_off(
     }.items():
         monkeypatch.setenv(name, value)
     settings = Settings(_env_file=None)  # type: ignore[call-arg]
-    store = FakeStore({URL}, keeps_loaded_at=True, loaded={URL: datetime.now(UTC) - timedelta(hours=25)})
+    old = SourceRecord(loaded_at=datetime.now(UTC) - timedelta(hours=25))
+    store = FakeStore({URL}, keeps_loaded_at=True, records={URL: old})
 
     result = SourceIngestor.from_settings(settings, store, FakeEmbedder()).ingest(URL)
 
     assert result.reused is not reloaded  # a copy 25 hours old is too old for 24 hours, and fine without a limit
     assert bool(fetched) is reloaded
+
+
+# --- asking the website whether the page changed ---
+
+STORED_AT = NOW - timedelta(days=3)
+ETAG = '"v1"'
+MODIFIED = "Wed, 21 Oct 2026 07:28:00 GMT"
+NEW_MODIFIED = "Thu, 22 Oct 2026 08:00:00 GMT"
+TEXT_HASH = hashlib.sha256(clean_text(extract_page(ARTICLE, URL).text).encode("utf-8")).hexdigest()
+
+
+def _record(
+    content_hash: str | None = TEXT_HASH, etag: str | None = ETAG, last_modified: str | None = MODIFIED
+) -> SourceRecord:
+    return SourceRecord(loaded_at=STORED_AT, etag=etag, last_modified=last_modified, content_hash=content_hash)
+
+
+class Clock:
+    """A time that only moves when the test moves it."""
+
+    def __init__(self, start: datetime) -> None:
+        self.now = start
+
+    def __call__(self) -> datetime:
+        return self.now
+
+
+class FakeRevalidate:
+    """Answers the question of whether the page changed: with 'not modified', with a document or with a failure."""
+
+    def __init__(self, answer: FetchedDocument | BaseException | None = None) -> None:
+        self.answer = answer
+        self.asked: list[tuple[str, Validators]] = []
+
+    def __call__(self, url: str, marks: Validators) -> FetchedDocument | None:
+        self.asked.append((url, marks))
+        if isinstance(self.answer, BaseException):
+            raise self.answer
+        return self.answer
+
+
+def _checking(
+    record: SourceRecord | None = None,
+    answer: FetchedDocument | BaseException | None = None,
+    *,
+    keeps_versions: bool = True,
+    interval: timedelta = timedelta(0),
+    clock: Callable[[], datetime] | None = None,
+    max_age: timedelta | None = None,
+    embedder: FakeEmbedder | None = None,
+) -> tuple[SourceIngestor, FakeStore, FakeFetch, FakeRevalidate, FakeEmbedder]:
+    """An ingestor over a store that holds the source, whose website answers ``answer`` to a question about a change."""
+    store = FakeStore({URL}, keeps_loaded_at=True, keeps_versions=keeps_versions, records={URL: record or _record()})
+    fetch, revalidate, embedder = FakeFetch(), FakeRevalidate(answer), embedder or FakeEmbedder()
+    ingestor = _ingestor(
+        store,
+        embedder,
+        fetch,
+        revalidate=revalidate,
+        check_interval=interval,
+        now=clock or (lambda: NOW),
+        max_age=max_age,
+    )
+    return ingestor, store, fetch, revalidate, embedder
+
+
+def test_a_page_that_did_not_change_is_not_downloaded_and_its_stored_copy_is_reused() -> None:
+    ingestor, store, fetch, revalidate, embedder = _checking()  # the website answers "not modified"
+
+    result = ingestor.ingest(URL)
+
+    assert result == IngestResult(url=URL, reused=True, age=timedelta(days=3), checked=True)
+    assert revalidate.asked == [(URL, Validators(etag=ETAG, last_modified=MODIFIED))]
+    assert fetch.urls == []
+    assert embedder.batches == []
+    assert store.replaced == []
+
+
+def test_a_page_that_is_sent_again_with_the_same_text_is_not_embedded_again() -> None:
+    same = FetchedDocument(kind="html", body=ARTICLE, url=URL)  # a website that gives no version marks
+    ingestor, store, _, _, embedder = _checking(answer=same)
+
+    result = ingestor.ingest(URL)
+
+    assert result == IngestResult(url=URL, reused=True, age=timedelta(days=3), checked=True)
+    assert embedder.batches == []
+    assert store.replaced == []
+
+
+def test_a_page_that_changed_is_loaded_again_with_its_new_version() -> None:
+    newer = FetchedDocument(
+        kind="html", body=ARTICLE, url=URL, validators=Validators(etag='"v2"', last_modified=NEW_MODIFIED)
+    )
+    ingestor, store, fetch, _, embedder = _checking(_record(content_hash="the fingerprint of the old text"), newer)
+
+    result = ingestor.ingest(URL)
+
+    assert result == IngestResult(url=URL, reused=False, title="Sample Article", chunk_count=1, changed=True)
+    assert fetch.urls == []  # the page that the check brought is used, and it is not downloaded a second time
+    assert len(embedder.batches) == 1
+    assert len(store.replaced) == 1
+    assert store.written == [
+        SourceRecord(loaded_at=NOW, etag='"v2"', last_modified=NEW_MODIFIED, content_hash=TEXT_HASH)
+    ]
+
+
+def test_a_stored_copy_without_a_fingerprint_is_loaded_again_once_to_learn_its_version() -> None:
+    record = _record(content_hash=None, etag=None, last_modified=None)  # stored before the versions were kept
+    page = FetchedDocument(kind="html", body=ARTICLE, url=URL, validators=Validators(etag='"v1"'))
+    ingestor, store, _, revalidate, _ = _checking(record, page)
+
+    result = ingestor.ingest(URL)
+
+    assert result == IngestResult(url=URL, reused=False, title="Sample Article", chunk_count=1, expired=True)
+    assert revalidate.asked == [(URL, Validators())]  # nothing was known, so it was an ordinary download
+    assert store.written[0] is not None
+    assert store.written[0].content_hash == TEXT_HASH
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        FetchError("The website could not be reached."),
+        InvalidURLError("That address is on a private network."),
+        ExtractionError("That link is a file, not a web page."),
+    ],
+)
+def test_when_the_page_cannot_be_checked_the_stored_copy_is_used_and_the_result_says_why(error: BaseException) -> None:
+    ingestor, store, _, _, embedder = _checking(answer=error)
+
+    result = ingestor.ingest(URL)
+
+    assert result == IngestResult(url=URL, reused=True, age=timedelta(days=3), problem=str(error))
+    assert store.replaced == []
+    assert embedder.batches == []
+
+
+def test_a_page_that_became_unreadable_keeps_the_stored_copy_and_says_why() -> None:
+    empty = FetchedDocument(kind="html", body=b"<html><body><p>Hi</p></body></html>", url=URL)
+    ingestor, store, _, _, _ = _checking(answer=empty)
+
+    result = ingestor.ingest(URL)
+
+    assert result.reused is True
+    assert result.problem is not None
+    assert "No readable text" in result.problem
+    assert store.replaced == []
+
+
+def test_when_the_new_version_cannot_be_embedded_the_earlier_copy_is_left_as_it_was() -> None:
+    newer = FetchedDocument(kind="html", body=ARTICLE, url=URL)
+    busy = FakeEmbedder(error=ServiceBusyError("Cohere is busy.", retry_after=30.0))
+    ingestor, store, _, _, _ = _checking(_record(content_hash="the old text"), newer, embedder=busy)
+
+    with pytest.raises(ServiceBusyError):
+        ingestor.ingest(URL)
+
+    assert store.replaced == []
+
+
+def test_nothing_is_asked_when_checking_is_switched_off_for_the_call() -> None:
+    ingestor, _, fetch, revalidate, _ = _checking()
+
+    result = ingestor.ingest(URL, check=False)
+
+    assert result == IngestResult(url=URL, reused=True, age=timedelta(days=3))
+    assert revalidate.asked == []
+    assert fetch.urls == []
+
+
+def test_nothing_is_asked_when_the_store_does_not_keep_versions() -> None:
+    ingestor, _, _, revalidate, _ = _checking(keeps_versions=False)  # a collection without the fields
+
+    assert ingestor.ingest(URL) == IngestResult(url=URL, reused=True, age=timedelta(days=3))
+    assert revalidate.asked == []
+
+
+def test_nothing_is_asked_when_the_ingestor_has_no_way_to_ask() -> None:
+    store = FakeStore({URL}, keeps_loaded_at=True, keeps_versions=True, records={URL: _record()})
+    ingestor = _ingestor(store, FakeEmbedder(), FakeFetch(), now=lambda: NOW)
+
+    assert ingestor.ingest(URL).reused is True
+
+
+def test_a_refresh_downloads_the_page_without_asking_whether_it_changed() -> None:
+    ingestor, _, fetch, revalidate, _ = _checking()
+
+    result = ingestor.ingest(URL, refresh=True)
+
+    assert result.reused is False
+    assert revalidate.asked == []
+    assert fetch.urls == [URL]
+
+
+def test_a_page_that_is_too_old_is_loaded_again_without_asking_whether_it_changed() -> None:
+    ingestor, _, fetch, revalidate, _ = _checking(max_age=timedelta(days=1))  # the copy is three days old
+
+    result = ingestor.ingest(URL)
+
+    assert result.expired is True
+    assert revalidate.asked == []
+    assert fetch.urls == [URL]
+
+
+def test_a_page_is_not_asked_about_again_until_the_time_between_checks_has_passed() -> None:
+    clock = Clock(NOW)
+    ingestor, _, _, revalidate, _ = _checking(interval=timedelta(seconds=60), clock=clock)
+
+    ingestor.ingest(URL)
+    clock.now += timedelta(seconds=30)
+    ingestor.ingest(URL)
+    assert len(revalidate.asked) == 1  # the second question came within the minute
+
+    clock.now += timedelta(seconds=31)
+    ingestor.ingest(URL)
+    assert len(revalidate.asked) == 2
+
+
+def test_a_page_that_was_just_loaded_is_not_asked_about_within_the_time_between_checks() -> None:
+    store = FakeStore(keeps_loaded_at=True, keeps_versions=True)  # nothing is stored yet
+    revalidate = FakeRevalidate()
+    ingestor = _ingestor(
+        store,
+        FakeEmbedder(),
+        FakeFetch(),
+        revalidate=revalidate,
+        check_interval=timedelta(seconds=60),
+        now=lambda: NOW,
+    )
+
+    first = ingestor.ingest(URL)
+    second = ingestor.ingest(URL)
+
+    assert first.reused is False
+    assert second == IngestResult(url=URL, reused=True, age=timedelta(0))
+    assert revalidate.asked == []
+
+
+def test_the_check_and_its_limits_come_from_the_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, Validators, dict[str, float]]] = []
+
+    def fake_fetch_if_changed(url: str, marks: Validators, **limits: float) -> FetchedDocument | None:
+        calls.append((url, marks, limits))
+        return None
+
+    monkeypatch.setattr(ingest, "fetch_if_changed", fake_fetch_if_changed)
+    for name, value in {
+        "COHERE_API_KEY": "c",
+        "WEAVIATE_URL": "https://example.weaviate.cloud",
+        "WEAVIATE_API_KEY": "w",
+        "GROQ_API_KEY": "g",
+        "SOURCE_CHECK_SECONDS": "3600",
+        "FETCH_TIMEOUT_SECONDS": "7",
+        "FETCH_MAX_BYTES": "1234",
+        "PDF_MAX_BYTES": "5678",
+    }.items():
+        monkeypatch.setenv(name, value)
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    store = FakeStore({URL}, keeps_loaded_at=True, keeps_versions=True, records={URL: _record()})
+    ingestor = SourceIngestor.from_settings(settings, store, FakeEmbedder())
+
+    first = ingestor.ingest(URL)
+    second = ingestor.ingest(URL)  # within the hour, so the website is not asked again
+
+    assert (first.checked, second.checked) == (True, False)
+    assert calls == [
+        (URL, Validators(etag=ETAG, last_modified=MODIFIED), {"timeout": 7.0, "max_bytes": 1234, "pdf_max_bytes": 5678})
+    ]
 
 
 # --- a PDF file ---

@@ -17,12 +17,17 @@ from chat_with_any_website_agent.errors import ServiceBusyError, StoreError
 from chat_with_any_website_agent.retrying import Retrier
 from chat_with_any_website_agent.vector_store import (
     AGE_PROPERTY,
+    ETAG_PROPERTY,
+    HASH_PROPERTY,
     INSERT_BATCH_SIZE,
+    LAST_MODIFIED_PROPERTY,
     NOT_MULTI_TENANT_MESSAGE,
+    VERSION_PROPERTIES,
     WEAVIATE_RETRYABLE,
+    SourceRecord,
     StoredChunk,
     WeaviateStore,
-    ensure_age_property,
+    ensure_record_properties,
     open_tenant,
     property_names,
 )
@@ -130,9 +135,13 @@ def test_a_new_collection_is_created_with_multi_tenancy_and_the_tenant_is_made()
         "heading",
         "chunk_index",
         "text",
-        "loaded_at",  # when the source was loaded, so that an old copy can be loaded again
+        "loaded_at",  # when the source was loaded
+        "etag",  # the marks of the version of the page, and a fingerprint of its text, to notice a change
+        "last_modified",
+        "content_hash",
     ]
-    assert created["properties"][-1].dataType == DataType.DATE
+    kinds = [prop.dataType for prop in created["properties"][-4:]]
+    assert kinds == [DataType.DATE, DataType.TEXT, DataType.TEXT, DataType.TEXT]
     assert collections.new_collection.tenants.created == ["development"]
     assert opened == "collection-for-development"  # every read and write goes through the tenant
 
@@ -250,22 +259,43 @@ def _connect_to(monkeypatch: pytest.MonkeyPatch, collections: FakeCollections) -
     return WeaviateStore.connect("https://cluster.example", SecretStr("secret"), "Chunks", "development")
 
 
-def test_a_store_over_a_collection_with_the_age_field_keeps_ages(monkeypatch: pytest.MonkeyPatch) -> None:
-    collections = FakeCollections({"Chunks": FakeCollection(properties=["url", AGE_PROPERTY])})
-
-    assert _connect_to(monkeypatch, collections).keeps_loaded_at is True
-
-
-def test_a_store_over_a_collection_without_the_age_field_does_not_keep_ages_and_says_how_to_add_it(
+def test_a_store_over_a_collection_with_all_the_fields_keeps_ages_and_versions(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    collections = FakeCollections({"Chunks": FakeCollection(properties=["url", "text"])})
+    collections = FakeCollections({"Chunks": FakeCollection(properties=["url", AGE_PROPERTY, *VERSION_PROPERTIES])})
 
     with caplog.at_level(logging.WARNING, logger="chat_with_any_website_agent.vector_store"):
         store = _connect_to(monkeypatch, collections)
 
-    assert store.keeps_loaded_at is False
-    assert "Run 'agent-smoke --prepare' once to add it." in caplog.text
+    assert (store.keeps_loaded_at, store.keeps_versions) == (True, True)
+    assert caplog.text == ""  # nothing is missing, so there is nothing to warn about
+
+
+@pytest.mark.parametrize(
+    ("properties", "kept", "missing"),
+    [
+        (["url", "text"], (False, False), "loaded_at, etag, last_modified, content_hash"),
+        (["url", AGE_PROPERTY], (True, False), "etag, last_modified, content_hash"),
+        (["url", *VERSION_PROPERTIES], (False, True), "loaded_at"),
+        # the versions are kept only when all three fields are there
+        (["url", AGE_PROPERTY, ETAG_PROPERTY, HASH_PROPERTY], (True, False), "last_modified"),
+    ],
+)
+def test_a_store_over_a_collection_that_lacks_fields_says_which_and_how_to_add_them(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    properties: list[str],
+    kept: tuple[bool, bool],
+    missing: str,
+) -> None:
+    collections = FakeCollections({"Chunks": FakeCollection(properties=properties)})
+
+    with caplog.at_level(logging.WARNING, logger="chat_with_any_website_agent.vector_store"):
+        store = _connect_to(monkeypatch, collections)
+
+    assert (store.keeps_loaded_at, store.keeps_versions) == kept
+    assert f"has no field {missing}," in caplog.text
+    assert "Run 'agent-smoke --prepare' once to add them." in caplog.text
     assert collections.existing["Chunks"].added == []  # connecting never changes the collection
 
 
@@ -335,13 +365,15 @@ class FakeTenantCollection:
 
 
 def _store(
-    client: FakeClient | None = None, *, keeps_loaded_at: bool = False
+    client: FakeClient | None = None, *, keeps_loaded_at: bool = False, keeps_versions: bool = False
 ) -> tuple[WeaviateStore, FakeTenantCollection, list[float]]:
     pauses: list[float] = []
     retrier = Retrier(WEAVIATE_RETRYABLE, sleep=pauses.append, jitter=lambda _: 0.0)
     collection = FakeTenantCollection()
     fake: Any = collection
-    store = WeaviateStore(fake, client=client, retrier=retrier, keeps_loaded_at=keeps_loaded_at)
+    store = WeaviateStore(
+        fake, client=client, retrier=retrier, keeps_loaded_at=keeps_loaded_at, keeps_versions=keeps_versions
+    )
     return store, collection, pauses
 
 
@@ -414,17 +446,20 @@ def test_the_whole_tenant_can_be_cleared() -> None:
     assert collection.data.deleted == [Filter.by_property("chunk_index").greater_or_equal(0)]
 
 
-# --- when a source was loaded ---
+# --- what is kept about the copy of a source ---
 
 LOADED = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
 SOURCE = "https://a.example/"
+MODIFIED = "Wed, 21 Oct 2026 07:28:00 GMT"
+MARKS = SourceRecord(loaded_at=LOADED, etag='"v1"', last_modified=MODIFIED, content_hash="abc123")
+CHUNK = StoredChunk("a", "", [0.0])
 
 
 def test_a_source_is_stored_with_the_time_it_was_loaded_when_the_collection_keeps_ages() -> None:
     store, collection, _ = _store(keeps_loaded_at=True)
     chunks = [StoredChunk("a", "", [0.0]), StoredChunk("b", "", [0.0])]
 
-    store.replace_source(SOURCE, "Page A", chunks, loaded_at=LOADED)
+    store.replace_source(SOURCE, "Page A", chunks, SourceRecord(loaded_at=LOADED))
 
     [inserted] = collection.data.inserted
     assert [item.properties[AGE_PROPERTY] for item in inserted] == [LOADED, LOADED]
@@ -434,27 +469,74 @@ def test_the_time_is_now_when_none_is_given() -> None:
     store, collection, _ = _store(keeps_loaded_at=True)
     before = datetime.now(UTC)
 
-    store.replace_source(SOURCE, "Page A", [StoredChunk("a", "", [0.0])])
+    store.replace_source(SOURCE, "Page A", [CHUNK])
 
     stored = collection.data.inserted[0][0].properties[AGE_PROPERTY]
     assert before <= stored <= datetime.now(UTC)
 
 
-def test_nothing_is_written_to_the_age_field_when_the_collection_lacks_it() -> None:
-    store, collection, _ = _store()  # the collection was made before the field existed
+def test_nothing_about_the_copy_is_written_when_the_collection_lacks_the_fields() -> None:
+    store, collection, _ = _store()  # the collection was made before the fields existed
 
-    store.replace_source(SOURCE, "Page A", [StoredChunk("a", "", [0.0])], loaded_at=LOADED)
+    store.replace_source(SOURCE, "Page A", [CHUNK], MARKS)
 
-    assert AGE_PROPERTY not in collection.data.inserted[0][0].properties
+    properties = collection.data.inserted[0][0].properties
+    assert set(properties) == {"url", "title", "heading", "chunk_index", "text"}
 
 
-def test_the_time_a_source_was_loaded_is_read_from_one_of_its_chunks() -> None:
-    store, collection, _ = _store(keeps_loaded_at=True)
-    collection.query.objects = [SimpleNamespace(properties={AGE_PROPERTY: LOADED})]
+def test_the_version_of_a_source_is_stored_with_its_chunks_when_the_collection_keeps_versions() -> None:
+    store, collection, _ = _store(keeps_loaded_at=True, keeps_versions=True)
 
-    assert store.loaded_at(SOURCE) == LOADED
+    store.replace_source(SOURCE, "Page A", [CHUNK], MARKS)
+
+    properties = collection.data.inserted[0][0].properties
+    assert properties[AGE_PROPERTY] == LOADED
+    assert properties[ETAG_PROPERTY] == '"v1"'
+    assert properties[LAST_MODIFIED_PROPERTY] == MODIFIED
+    assert properties[HASH_PROPERTY] == "abc123"
+
+
+def test_marks_that_the_website_did_not_give_are_not_written() -> None:
+    store, collection, _ = _store(keeps_loaded_at=True, keeps_versions=True)
+
+    store.replace_source(SOURCE, "Page A", [CHUNK], SourceRecord(loaded_at=LOADED, content_hash="abc123"))
+
+    properties = collection.data.inserted[0][0].properties
+    assert ETAG_PROPERTY not in properties
+    assert LAST_MODIFIED_PROPERTY not in properties
+    assert properties[HASH_PROPERTY] == "abc123"
+
+
+def test_the_version_is_not_written_when_only_the_age_field_exists() -> None:
+    store, collection, _ = _store(keeps_loaded_at=True)  # a collection upgraded before the version fields existed
+
+    store.replace_source(SOURCE, "Page A", [CHUNK], MARKS)
+
+    properties = collection.data.inserted[0][0].properties
+    assert properties[AGE_PROPERTY] == LOADED
+    assert not set(VERSION_PROPERTIES) & set(properties)
+
+
+def test_the_record_of_a_source_is_read_from_one_of_its_chunks() -> None:
+    store, collection, _ = _store(keeps_loaded_at=True, keeps_versions=True)
+    collection.query.objects = [
+        SimpleNamespace(
+            properties={
+                AGE_PROPERTY: LOADED,
+                ETAG_PROPERTY: '"v1"',
+                LAST_MODIFIED_PROPERTY: MODIFIED,
+                HASH_PROPERTY: "abc123",
+            }
+        )
+    ]
+
+    assert store.source_record(SOURCE) == MARKS
     assert collection.query.fetch_calls == [
-        {"filters": Filter.by_property("url").equal(SOURCE), "limit": 1, "return_properties": [AGE_PROPERTY]}
+        {
+            "filters": Filter.by_property("url").equal(SOURCE),
+            "limit": 1,
+            "return_properties": [AGE_PROPERTY, *VERSION_PROPERTIES],
+        }
     ]
 
 
@@ -474,38 +556,81 @@ def test_a_time_is_read_whatever_form_weaviate_returns_it_in(value: object, expe
     store, collection, _ = _store(keeps_loaded_at=True)
     collection.query.objects = [SimpleNamespace(properties={AGE_PROPERTY: value})]
 
-    assert store.loaded_at(SOURCE) == expected
+    record = store.source_record(SOURCE)
+
+    assert record is not None
+    assert record.loaded_at == expected
 
 
-def test_the_time_of_a_source_that_is_not_stored_is_not_known() -> None:
-    store, _, _ = _store(keeps_loaded_at=True)
+def test_a_copy_stored_before_the_fields_existed_has_an_empty_record() -> None:
+    store, collection, _ = _store(keeps_loaded_at=True, keeps_versions=True)
+    collection.query.objects = [SimpleNamespace(properties={})]
 
-    assert store.loaded_at(SOURCE) is None
-
-
-def test_weaviate_is_not_asked_for_a_time_that_the_collection_does_not_keep() -> None:
-    store, collection, _ = _store()
-    collection.query.objects = [SimpleNamespace(properties={AGE_PROPERTY: LOADED})]
-
-    assert store.loaded_at(SOURCE) is None
-    assert collection.query.fetch_calls == []
+    assert store.source_record(SOURCE) == SourceRecord()
 
 
-def test_the_age_field_is_added_to_a_collection_that_lacks_it() -> None:
+def test_marks_that_are_empty_or_not_text_are_not_known() -> None:
+    store, collection, _ = _store(keeps_loaded_at=True, keeps_versions=True)
+    collection.query.objects = [
+        SimpleNamespace(properties={ETAG_PROPERTY: "", LAST_MODIFIED_PROPERTY: 5, HASH_PROPERTY: None})
+    ]
+
+    assert store.source_record(SOURCE) == SourceRecord()
+
+
+def test_the_record_of_a_source_that_is_not_stored_is_none() -> None:
+    store, _, _ = _store(keeps_loaded_at=True, keeps_versions=True)
+
+    assert store.source_record(SOURCE) is None
+
+
+@pytest.mark.parametrize(
+    ("keeps_loaded_at", "keeps_versions", "asked"),
+    [
+        (True, True, [AGE_PROPERTY, *VERSION_PROPERTIES]),
+        (True, False, [AGE_PROPERTY]),
+        (False, True, list(VERSION_PROPERTIES)),
+        (False, False, []),
+    ],
+)
+def test_only_the_fields_that_the_collection_has_are_asked_for(
+    keeps_loaded_at: bool, keeps_versions: bool, asked: list[str]
+) -> None:
+    store, collection, _ = _store(keeps_loaded_at=keeps_loaded_at, keeps_versions=keeps_versions)
+    collection.query.objects = [SimpleNamespace(properties={})]
+
+    store.source_record(SOURCE)
+
+    assert collection.query.fetch_calls[0]["return_properties"] == asked
+
+
+def test_the_fields_are_added_to_a_collection_that_lacks_them() -> None:
     collection = FakeCollection(properties=["url", "text"])
 
-    assert ensure_age_property(collection) is True
+    added = ensure_record_properties(collection)
 
-    [added] = collection.added
-    assert added.name == AGE_PROPERTY
-    assert added.dataType == DataType.DATE
-    assert property_names(collection) == {"url", "text", AGE_PROPERTY}
+    assert added == [AGE_PROPERTY, *VERSION_PROPERTIES]
+    types = {prop.name: prop.dataType for prop in collection.added}
+    assert types == {
+        AGE_PROPERTY: DataType.DATE,
+        ETAG_PROPERTY: DataType.TEXT,
+        LAST_MODIFIED_PROPERTY: DataType.TEXT,
+        HASH_PROPERTY: DataType.TEXT,
+    }
+    assert property_names(collection) == {"url", "text", AGE_PROPERTY, *VERSION_PROPERTIES}
 
 
-def test_nothing_is_added_when_the_collection_has_the_age_field_already() -> None:
-    collection = FakeCollection(properties=["url", AGE_PROPERTY])
+def test_only_the_missing_fields_are_added() -> None:
+    collection = FakeCollection(properties=["url", AGE_PROPERTY])  # upgraded before the version fields existed
 
-    assert ensure_age_property(collection) is False
+    assert ensure_record_properties(collection) == list(VERSION_PROPERTIES)
+    assert [prop.name for prop in collection.added] == list(VERSION_PROPERTIES)
+
+
+def test_nothing_is_added_when_the_collection_has_all_the_fields() -> None:
+    collection = FakeCollection(properties=["url", AGE_PROPERTY, *VERSION_PROPERTIES])
+
+    assert ensure_record_properties(collection) == []
     assert collection.added == []
 
 

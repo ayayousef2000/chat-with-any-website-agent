@@ -29,9 +29,11 @@ class FakeIngestor:
     def __init__(self, failures: dict[str, BaseException] | None = None) -> None:
         self.failures = failures or {}
         self.ingested: list[str] = []
+        self.checks: list[bool] = []  # whether the website was to be asked about a change, for each source
 
-    def ingest(self, url: str) -> IngestResult:
+    def ingest(self, url: str, *, check: bool = True) -> IngestResult:
         self.ingested.append(url)
+        self.checks.append(check)
         if url in self.failures:
             raise self.failures[url]
         return IngestResult(url=f"{url}/", reused=True)
@@ -73,6 +75,17 @@ def test_a_question_is_answered_about_its_source_and_the_sources_it_names() -> N
     assert ingestor.ingested == [URL, OTHER]
     assert agent.asked == [("Which one?", [f"{URL}/", f"{OTHER}/"])]  # the normalized addresses, in order
     assert outcome == Outcome(answer="The answer [1].", excerpts=("An excerpt.",), sources=(f"{URL}/",))
+
+
+def test_a_question_does_not_ask_the_website_again_but_preparing_the_source_does() -> None:
+    system, ingestor, _, _ = _system()
+
+    system.prepare(URL)
+    system.ask(Case(url=URL, question="Q?", sources=(OTHER,)))
+
+    # The source was checked when the run prepared it. The questions use the copy that the run began with, so that
+    # the answers of one run do not depend on when each question was asked.
+    assert ingestor.checks == [True, False, False]
 
 
 def test_a_source_that_cannot_be_loaded_is_a_failed_answer_and_not_an_error() -> None:

@@ -66,7 +66,7 @@ uv run agent-smoke --prepare # check the services, create the Weaviate collectio
 
 ## Usage
 
-Ask a question about a page or a PDF file. The source is loaded once and reused for the next questions (use `--refresh` to load it again, or set `SOURCE_MAX_AGE_HOURS` to load a copy again when it gets old):
+Ask a question about a page or a PDF file. The source is loaded once and stored. At the next questions the website is asked whether the page changed (a very small request), and the stored copy is used if it did not; if the page changed, the copy is made again, so the answer is based on the page as it is when you ask:
 
 ```bash
 uv run agent-ask "https://docs.python.org/3/tutorial/controlflow.html" "What does the pass statement do?"
@@ -75,7 +75,8 @@ uv run agent-ask "https://docs.python.org/3/tutorial/controlflow.html" "What doe
 It prints the answer, the sources it cites, every step the agent took and what the question cost. Useful options:
 
 - `--also URL` searches a further source as well; it can be repeated.
-- `--refresh` downloads the source again even if a copy is stored.
+- `--refresh` downloads the source again even if a copy is stored and the page did not change.
+- `--no-check` uses a stored copy without asking the website whether the page changed.
 - `--tenant NAME` uses another Weaviate tenant, for example `demo`.
 - `--no-steps` hides the steps.
 
@@ -98,6 +99,7 @@ Settings are read from the environment or from `.env`; `.env.example` lists all 
 | `GROQ_MODEL` | `openai/gpt-oss-120b` | The model that writes the answer |
 | `GROQ_GRADE_MODEL` | `openai/gpt-oss-20b` | The model that grades the excerpts and rewrites queries |
 | `GROQ_BACKUP_API_KEYS` | empty | More Groq keys, separated by commas, used in turn when one reaches its limit |
+| `SOURCE_CHECK_SECONDS` | 0 | A stored page checked less than this many seconds ago is not checked again; 0 checks at every question |
 | `SOURCE_MAX_AGE_HOURS` | 0 | A stored copy of a source older than this many hours is loaded again; 0 never does that |
 | `AGENT_MAX_STEPS` | 12 | The most graph steps for one question |
 | `AGENT_MAX_LLM_CALLS` | 8 | The most calls to the language model for one question |

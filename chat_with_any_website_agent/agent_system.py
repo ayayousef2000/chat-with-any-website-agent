@@ -62,7 +62,9 @@ class AgentSystem:
             could not be loaded.
         """
         try:
-            urls = [self._runtime.ingestor.ingest(url).url for url in (case.url, *case.sources)]
+            # The pages were checked when the run prepared them; asking again at every question would make the
+            # answers of one run depend on when they were asked.
+            urls = [self._runtime.ingestor.ingest(url, check=False).url for url in (case.url, *case.sources)]
         except SOURCE_ERRORS as error:
             return Outcome(answer=f"The source could not be loaded: {error}", reason=str(error))
         answer = self._runtime.agent.ask(case.question, urls)

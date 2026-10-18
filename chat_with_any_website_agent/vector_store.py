@@ -39,10 +39,32 @@ WEAVIATE_RETRYABLE: tuple[type[BaseException], ...] = (WeaviateConnectionError, 
 
 INSERT_BATCH_SIZE = 100
 
-# The field of every chunk that says when its source was loaded, so that an old copy can be loaded again.
+# The fields of every chunk that describe the copy of its source: when it was loaded, and which version of the page it
+# is (the marks the website gave, and a fingerprint of the cleaned text), so that a changed page can be noticed.
 AGE_PROPERTY = "loaded_at"
+ETAG_PROPERTY = "etag"
+LAST_MODIFIED_PROPERTY = "last_modified"
+HASH_PROPERTY = "content_hash"
+VERSION_PROPERTIES = (ETAG_PROPERTY, LAST_MODIFIED_PROPERTY, HASH_PROPERTY)
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SourceRecord:
+    """What is kept about the stored copy of a source, next to its chunks.
+
+    Attributes:
+        loaded_at: When the copy was loaded.
+        etag: The ``ETag`` that the website gave with the page.
+        last_modified: The ``Last-Modified`` date that the website gave with the page.
+        content_hash: A fingerprint of the cleaned text of the page, to tell whether the text changed.
+    """
+
+    loaded_at: datetime | None = None
+    etag: str | None = None
+    last_modified: str | None = None
+    content_hash: str | None = None
 
 
 @dataclass(frozen=True)
@@ -112,6 +134,14 @@ def _existing_collection(client: Any, name: str) -> Collection[Any, Any]:
     return collection
 
 
+def _record_properties() -> list[Property]:
+    """The fields that describe the copy of a source. They are not searched, only read."""
+    return [
+        Property(name=AGE_PROPERTY, data_type=DataType.DATE),
+        *(Property(name=name, data_type=DataType.TEXT, index_searchable=False) for name in VERSION_PROPERTIES),
+    ]
+
+
 def _get_or_create_collection(client: Any, name: str) -> Collection[Any, Any]:
     if client.collections.exists(name):
         return _existing_collection(client, name)
@@ -125,7 +155,7 @@ def _get_or_create_collection(client: Any, name: str) -> Collection[Any, Any]:
                 Property(name="heading", data_type=DataType.TEXT),
                 Property(name="chunk_index", data_type=DataType.INT),
                 Property(name="text", data_type=DataType.TEXT),
-                Property(name=AGE_PROPERTY, data_type=DataType.DATE),
+                *_record_properties(),
             ],
             # Vectors are computed by the application (Cohere), not by Weaviate.
             vector_config=Configure.Vectors.self_provided(),
@@ -144,22 +174,25 @@ def property_names(collection: Any) -> set[str]:
     return {prop.name for prop in collection.config.get().properties}
 
 
-def ensure_age_property(collection: Any) -> bool:
-    """Add the field that says when a source was loaded, if the collection does not have it yet.
+def ensure_record_properties(collection: Any) -> list[str]:
+    """Add the fields that describe the copy of a source, for the ones the collection does not have yet.
 
-    The change only adds a field. No chunk is changed or deleted, and no embedding is made. The chunks that were
-    stored before have no value in the field, so their age is not known.
+    The change only adds fields. No chunk is changed or deleted, and no embedding is made. The chunks that were
+    stored before have no value in the fields, so the age and the version of their copy are not known.
 
     Args:
         collection: The collection, not bound to a tenant.
 
     Returns:
-        ``True`` if the field was added, ``False`` if the collection had it already.
+        The names of the fields that were added. Empty when the collection had them all.
     """
-    if AGE_PROPERTY in property_names(collection):
-        return False
-    collection.config.add_property(Property(name=AGE_PROPERTY, data_type=DataType.DATE))
-    return True
+    existing = property_names(collection)
+    added = []
+    for prop in _record_properties():
+        if prop.name not in existing:
+            collection.config.add_property(prop)
+            added.append(prop.name)
+    return added
 
 
 def _as_datetime(value: Any) -> datetime | None:
@@ -172,6 +205,11 @@ def _as_datetime(value: Any) -> datetime | None:
     if not isinstance(value, datetime):
         return None
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _as_text(value: Any) -> str | None:
+    """Read a text field that may be missing, so that a missing or empty value is ``None``."""
+    return value if isinstance(value, str) and value else None
 
 
 def _url_filter(url: str) -> Any:
@@ -188,6 +226,7 @@ class WeaviateStore:
         client: Any = None,
         retrier: Retrier | None = None,
         keeps_loaded_at: bool = False,
+        keeps_versions: bool = False,
     ) -> None:
         """Create a store over a collection that is already bound to a tenant.
 
@@ -197,16 +236,24 @@ class WeaviateStore:
             retrier: How to try again after a failed connection. The default suits a person who is waiting.
             keeps_loaded_at: Whether the collection has the field that says when a source was loaded. When it does
                 not, nothing is written to that field and the age of a source is not known.
+            keeps_versions: Whether the collection has the fields that say which version of a page a copy is. When it
+                does not, nothing is written to them and a changed page cannot be noticed.
         """
         self._collection = collection
         self._client = client
         self._retrier = retrier or Retrier(retryable=WEAVIATE_RETRYABLE)
         self._keeps_loaded_at = keeps_loaded_at
+        self._keeps_versions = keeps_versions
 
     @property
     def keeps_loaded_at(self) -> bool:
         """Whether the collection keeps when each source was loaded."""
         return self._keeps_loaded_at
+
+    @property
+    def keeps_versions(self) -> bool:
+        """Whether the collection keeps which version of a page each copy is."""
+        return self._keeps_versions
 
     @classmethod
     def connect(
@@ -243,18 +290,25 @@ class WeaviateStore:
         )
         try:
             collection = open_tenant(client, collection_name, tenant)
-            keeps_loaded_at = AGE_PROPERTY in property_names(client.collections.use(collection_name))
+            names = property_names(client.collections.use(collection_name))
         except Exception:
             client.close()  # a failed start must not leave the connection open
             raise
-        if not keeps_loaded_at:
+        missing = [prop.name for prop in _record_properties() if prop.name not in names]
+        if missing:
             logger.warning(
-                "The collection %s has no field %s, so the age of the stored sources is not known. "
-                "Run 'agent-smoke --prepare' once to add it.",
+                "The collection %s has no field %s, so the age and the version of the stored sources are not "
+                "known and a page that changed is not noticed. Run 'agent-smoke --prepare' once to add them.",
                 collection_name,
-                AGE_PROPERTY,
+                ", ".join(missing),
             )
-        return cls(collection, client=client, retrier=retrier, keeps_loaded_at=keeps_loaded_at)
+        return cls(
+            collection,
+            client=client,
+            retrier=retrier,
+            keeps_loaded_at=AGE_PROPERTY in names,
+            keeps_versions=all(name in names for name in VERSION_PROPERTIES),
+        )
 
     def __enter__(self) -> Self:
         return self
@@ -265,7 +319,7 @@ class WeaviateStore:
         self.close()
 
     def replace_source(
-        self, url: str, title: str, chunks: Sequence[StoredChunk], loaded_at: datetime | None = None
+        self, url: str, title: str, chunks: Sequence[StoredChunk], record: SourceRecord | None = None
     ) -> None:
         """Remove any chunks previously stored for a source and store the new ones.
 
@@ -273,14 +327,14 @@ class WeaviateStore:
             url: The address of the source.
             title: The title of the source.
             chunks: The chunks with their embeddings, in reading order.
-            loaded_at: When the source was loaded, now when it is not given. It is only kept when the collection has
-                the field for it.
+            record: What is kept about this copy of the source. The time it was loaded is now when it is not given.
+                A field is only written when the collection has it.
 
         Raises:
             StoreError: If Weaviate refuses to store some of the chunks.
             ServiceBusyError: If Weaviate cannot be reached after the retries.
         """
-        age: dict[str, Any] = {AGE_PROPERTY: loaded_at or datetime.now(UTC)} if self._keeps_loaded_at else {}
+        age = self._record_values(record or SourceRecord())
         objects = [
             DataObject(
                 properties={
@@ -350,27 +404,44 @@ class WeaviateStore:
         )
         return bool(response.objects)
 
-    def loaded_at(self, url: str) -> datetime | None:
-        """Find out when a source was loaded.
+    def _record_values(self, record: SourceRecord) -> dict[str, Any]:
+        """The values of a record that the collection has a field for."""
+        values: dict[str, Any] = {}
+        if self._keeps_loaded_at:
+            values[AGE_PROPERTY] = record.loaded_at or datetime.now(UTC)
+        if self._keeps_versions:
+            marks = (record.etag, record.last_modified, record.content_hash)
+            values.update({name: value for name, value in zip(VERSION_PROPERTIES, marks, strict=True) if value})
+        return values
+
+    def source_record(self, url: str) -> SourceRecord | None:
+        """Find out what is kept about the stored copy of a source.
 
         Args:
             url: The address of the source.
 
         Returns:
-            The time the stored copy was made, or ``None`` when it is not known: the collection has no field for it,
-            the source is not stored, or its chunks were stored before the field existed.
+            What is kept about the copy, or ``None`` when the source is not stored. A part that is not known is
+            ``None`` in the record: the collection has no field for it, or the copy was stored before the field was
+            added.
         """
-        if not self._keeps_loaded_at:
-            return None
+        names = [
+            *([AGE_PROPERTY] if self._keeps_loaded_at else []),
+            *(VERSION_PROPERTIES if self._keeps_versions else []),
+        ]
         response = self._retrier.call(
-            lambda: self._collection.query.fetch_objects(
-                filters=_url_filter(url), limit=1, return_properties=[AGE_PROPERTY]
-            ),
+            lambda: self._collection.query.fetch_objects(filters=_url_filter(url), limit=1, return_properties=names),
             name="Weaviate",
         )
         if not response.objects:
             return None
-        return _as_datetime(response.objects[0].properties.get(AGE_PROPERTY))
+        found = response.objects[0].properties
+        return SourceRecord(
+            loaded_at=_as_datetime(found.get(AGE_PROPERTY)),
+            etag=_as_text(found.get(ETAG_PROPERTY)),
+            last_modified=_as_text(found.get(LAST_MODIFIED_PROPERTY)),
+            content_hash=_as_text(found.get(HASH_PROPERTY)),
+        )
 
     def search(
         self,
