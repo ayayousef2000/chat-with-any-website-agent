@@ -51,6 +51,9 @@ class Settings(BaseSettings):
 
     # A stored copy of a source older than this is loaded again. 0 never loads a copy again because of its age.
     source_max_age_hours: int = Field(default=0, ge=0)
+    # The website is asked whether a stored page changed before the copy is used, and the copy is made again if it did.
+    # A page that was checked less than this many seconds ago is not asked about again; 0 asks at every question.
+    source_check_seconds: int = Field(default=0, ge=0)
 
     # Limits for one question
     agent_max_steps: int = Field(default=12, gt=0)  # the most graph nodes run for one question

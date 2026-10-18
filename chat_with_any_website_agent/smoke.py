@@ -26,8 +26,9 @@ from chat_with_any_website_agent.retrying import Retrier, RetryPolicy
 from chat_with_any_website_agent.usage import UsageCounter
 from chat_with_any_website_agent.vector_store import (
     AGE_PROPERTY,
+    VERSION_PROPERTIES,
     WeaviateStore,
-    ensure_age_property,
+    ensure_record_properties,
     open_tenant,
     property_names,
 )
@@ -92,11 +93,11 @@ def check_weaviate(client: Any, collection_name: str, tenant: str, *, prepare: b
         return [Check("weaviate", "connection", False, "the cluster is not ready; it may be waking up, try again soon")]
     checks = [Check("weaviate", "connection", True, "the cluster is ready")]
     try:
-        added = False
+        added: list[str] = []
         if prepare:
             for environment in ENVIRONMENTS:
                 open_tenant(client, collection_name, environment)
-            added = ensure_age_property(client.collections.use(collection_name))
+            added = ensure_record_properties(client.collections.use(collection_name))
         if not client.collections.exists(collection_name):
             detail = f"{collection_name} does not exist yet; run with --prepare to create it"
             return [*checks, Check("weaviate", "collection", True, detail)]
@@ -109,19 +110,28 @@ def check_weaviate(client: Any, collection_name: str, tenant: str, *, prepare: b
             count = WeaviateStore(collection.with_tenant(tenant)).count_chunks()
             detail += f"; {count} chunk(s) in {tenant}"
         checks.append(Check("weaviate", "collection", True, detail))
-        checks.append(_age_check(collection, added=added))
+        checks.append(_version_check(collection, added=added))
     except Exception as error:
         checks.append(Check("weaviate", "collection", False, _describe(error)))
     return checks
 
 
-def _age_check(collection: Any, *, added: bool) -> Check:
-    """Say whether the collection keeps when each source was loaded, which lets an old copy be loaded again."""
-    if AGE_PROPERTY in property_names(collection):
-        detail = f"the field {AGE_PROPERTY} keeps when a source was loaded" + ("; it was added now" if added else "")
-        return Check("weaviate", "source age", True, detail)
-    detail = f"the field {AGE_PROPERTY} is missing, so the age of stored sources is not known; run with --prepare"
-    return Check("weaviate", "source age", True, detail)
+def _version_check(collection: Any, *, added: list[str]) -> Check:
+    """Say whether the collection keeps when each source was loaded and which version of the page it is.
+
+    That is what lets a page that changed be noticed. A collection that lacks the fields still works: the check
+    passes and says what to run.
+    """
+    names = property_names(collection)
+    missing = [name for name in (AGE_PROPERTY, *VERSION_PROPERTIES) if name not in names]
+    if missing:
+        detail = (
+            f"the fields {', '.join(missing)} are missing, so the age and the version of stored sources are not known "
+            "and a page that changed is not noticed; run with --prepare"
+        )
+        return Check("weaviate", "source versions", True, detail)
+    detail = "the collection keeps when a source was loaded and which version of the page it is"
+    return Check("weaviate", "source versions", True, detail + (f"; added now: {', '.join(added)}" if added else ""))
 
 
 def check_cohere(embedder: Any, reranker: Any, dimension: int) -> list[Check]:
@@ -294,7 +304,8 @@ def describe_plan(settings: Settings, services: Sequence[str], *, prepare: bool)
     if "weaviate" in services:
         action = (
             f"create {settings.weaviate_collection} and the tenants {', '.join(ENVIRONMENTS)} if missing, "
-            f"and add the field {AGE_PROPERTY} (when a source was loaded) if the collection lacks it"
+            f"and add the fields {', '.join((AGE_PROPERTY, *VERSION_PROPERTIES))} (when a source was loaded and which "
+            "version of the page it is) if the collection lacks them"
             if prepare
             else f"read {settings.weaviate_collection} and its tenants (nothing is written)"
         )
@@ -319,7 +330,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--prepare",
         action="store_true",
-        help="Create the Weaviate collection and the tenants, and add the field that keeps when a source was loaded",
+        help="Create the Weaviate collection and the tenants, and add the fields that keep the version of each source",
     )
     parser.add_argument("--dry-run", action="store_true", help="Show what would be done and call nothing")
     return parser

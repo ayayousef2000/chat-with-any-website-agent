@@ -47,11 +47,24 @@ def _ago(age: timedelta) -> str:
 
 
 def _describe(result: IngestResult, name: str) -> str:
-    if result.reused:
-        loaded = f" (loaded {_ago(result.age)})" if result.age is not None else ""
-        return f"Reused the stored copy of {name}{loaded}."
-    again = " The stored copy was too old, or its age was not known, so it was loaded again." if result.expired else ""
-    return f"Loaded {name} ({result.chunk_count} chunk(s) stored).{again}"
+    """Say what happened to a source: loaded, reused as it was, checked and unchanged, or loaded again."""
+    stored = f"{result.chunk_count} chunk(s) stored"
+    if result.changed:
+        return f"The page of {name} changed since the stored copy was made, so it was loaded again ({stored})."
+    if not result.reused:
+        again = (
+            " The stored copy was too old, or its age or version was not known, so it was loaded again."
+            if result.expired
+            else ""
+        )
+        return f"Loaded {name} ({stored}).{again}"
+    loaded = f" (loaded {_ago(result.age)})" if result.age is not None else ""
+    if result.problem:
+        asked = f"Could not check whether the page of {name} changed ({result.problem})"
+        return f"{asked}, so the stored copy{loaded} was used."
+    if result.checked:
+        return f"Checked {name}: the page has not changed since the stored copy was made{loaded}."
+    return f"Reused the stored copy of {name}{loaded}."
 
 
 def format_answer(
@@ -109,7 +122,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--tenant", help="The Weaviate tenant to use instead of WEAVIATE_TENANT, for example demo")
     parser.add_argument(
-        "--refresh", action="store_true", help="Download the source again even if a young copy of it is stored"
+        "--refresh", action="store_true", help="Download the source again even if a copy of it is stored"
+    )
+    parser.add_argument(
+        "--no-check",
+        action="store_true",
+        help="Use a stored copy without asking the website whether the page changed",
     )
     parser.add_argument("--no-steps", action="store_true", help="Do not list the steps of the agent")
     return parser
@@ -140,8 +158,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         runtime = build_runtime(settings, usage, tenant=args.tenant)
         try:
-            ingested = runtime.ingestor.ingest(args.url, refresh=args.refresh)
-            extras = [runtime.ingestor.ingest(url, refresh=args.refresh) for url in args.also]
+            check = not args.no_check
+            ingested = runtime.ingestor.ingest(args.url, refresh=args.refresh, check=check)
+            extras = [runtime.ingestor.ingest(url, refresh=args.refresh, check=check) for url in args.also]
             answer = runtime.agent.ask(args.question, [ingested.url, *(extra.url for extra in extras)])
         finally:
             runtime.close()

@@ -55,12 +55,14 @@ class FakeRuntime:
         self.error = error
         self.closed = False
         self.ingested: list[tuple[str, bool]] = []
+        self.checks: list[bool] = []  # whether the website was to be asked about a change, for each source
         self.asked: list[tuple[str, list[str]]] = []
         self.ingestor = SimpleNamespace(ingest=self._ingest)
         self.agent = SimpleNamespace(ask=self._ask)
 
-    def _ingest(self, url: str, *, refresh: bool = False) -> IngestResult:
+    def _ingest(self, url: str, *, refresh: bool = False, check: bool = True) -> IngestResult:
         self.ingested.append((url, refresh))
+        self.checks.append(check)
         if self.error is not None:
             raise self.error
         return IngestResult(url=f"{url}/", reused=False, title="Control Flow", chunk_count=4)  # normalized
@@ -153,8 +155,53 @@ def test_a_copy_that_was_too_old_is_said_to_have_been_loaded_again() -> None:
 
     assert text.startswith(
         "Loaded the source (4 chunk(s) stored). "
-        "The stored copy was too old, or its age was not known, so it was loaded again."
+        "The stored copy was too old, or its age or version was not known, so it was loaded again."
     )
+
+
+def test_a_page_that_has_not_changed_is_said_to_have_been_checked() -> None:
+    ingested = IngestResult(url=NORMALIZED, reused=True, age=timedelta(days=2), checked=True)
+
+    text = format_answer(ingested, ANSWERED, UsageCounter(), 1.0)
+
+    assert text.startswith(
+        "Checked the source: the page has not changed since the stored copy was made (loaded 2 days ago)."
+    )
+
+
+def test_a_page_that_changed_is_said_to_have_been_loaded_again() -> None:
+    ingested = IngestResult(url=NORMALIZED, reused=False, chunk_count=4, changed=True)
+
+    text = format_answer(ingested, ANSWERED, UsageCounter(), 1.0)
+
+    assert text.startswith(
+        "The page of the source changed since the stored copy was made, so it was loaded again (4 chunk(s) stored)."
+    )
+
+
+def test_a_page_that_could_not_be_checked_says_why_and_that_the_stored_copy_was_used() -> None:
+    ingested = IngestResult(
+        url=NORMALIZED, reused=True, age=timedelta(hours=5), problem="The website could not be reached."
+    )
+
+    text = format_answer(ingested, ANSWERED, UsageCounter(), 1.0)
+
+    assert text.startswith(
+        "Could not check whether the page of the source changed (The website could not be reached.), "
+        "so the stored copy (loaded 5 hours ago) was used."
+    )
+
+
+def test_the_changes_of_further_sources_are_described_by_their_address() -> None:
+    first = IngestResult(url=NORMALIZED, reused=True)
+    extra = IngestResult(url="https://docs.example/data/", reused=True, age=timedelta(minutes=10), checked=True)
+
+    text = format_answer(first, ANSWERED, UsageCounter(), 1.0, extras=[extra])
+
+    assert (
+        "Checked https://docs.example/data/: the page has not changed since the stored copy was made "
+        "(loaded 10 minutes ago)."
+    ) in text
 
 
 def test_a_stored_source_is_said_to_be_reused() -> None:
@@ -249,6 +296,21 @@ def test_the_stored_copies_of_further_sources_are_said_to_be_reused() -> None:
     assert text.startswith(
         "Reused the stored copy of the source.\nReused the stored copy of https://docs.example/data/.\n\n"
     )
+
+
+def test_the_website_is_asked_about_a_change_unless_told_not_to(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runtime, _ = _wire(monkeypatch)
+    other = "https://docs.example/data"
+
+    main([URL, "Q?", "--also", other])
+    assert runtime.checks == [True, True]
+
+    runtime.checks.clear()
+    main([URL, "Q?", "--also", other, "--no-check"])
+    assert runtime.checks == [False, False]
+    capsys.readouterr()
 
 
 def test_an_abstention_is_not_an_error(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
