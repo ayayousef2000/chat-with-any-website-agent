@@ -72,9 +72,10 @@ def test_pdf_support_can_be_switched_off_with_zero(monkeypatch: pytest.MonkeyPat
 
 def test_default_limits(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = _settings(monkeypatch)
-    assert settings.agent_max_steps == 12
+    assert settings.agent_max_steps == 24
     assert settings.agent_max_link_hops == 3
-    assert settings.agent_max_llm_calls == 8
+    assert settings.agent_max_pages == 5
+    assert settings.agent_max_llm_calls == 12
     assert settings.agent_max_rewrites == 2
     assert settings.eval_max_cohere_calls == 300
     assert settings.eval_max_groq_calls == 200
@@ -162,8 +163,8 @@ def test_values_that_must_be_positive_reject_zero(monkeypatch: pytest.MonkeyPatc
         _settings(monkeypatch, **{name: "0"})
 
 
-@pytest.mark.parametrize("name", ["AGENT_MAX_LINK_HOPS", "AGENT_MAX_REWRITES"])
-def test_hops_and_rewrites_may_be_zero_but_not_negative(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+@pytest.mark.parametrize("name", ["AGENT_MAX_LINK_HOPS", "AGENT_MAX_PAGES", "AGENT_MAX_REWRITES"])
+def test_hops_pages_and_rewrites_may_be_zero_but_not_negative(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
     assert _settings(monkeypatch, **{name: "0"}) is not None
     with pytest.raises(ValidationError):
         _settings(monkeypatch, **{name: "-1"})

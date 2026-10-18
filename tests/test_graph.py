@@ -495,6 +495,29 @@ def test_what_follows_the_grade_depends_on_the_verdict_and_on_what_is_left_of_th
     assert next_step(state, LIMITS) == expected
 
 
+def test_link_hops_are_counted_in_the_limits_that_are_needed() -> None:
+    limits = AgentLimits(max_steps=12, max_llm_calls=8, max_rewrites=2, max_link_hops=3, max_pages=5)
+
+    assert limits.problems() == [
+        "AGENT_MAX_STEPS is 12, but 3 link hop(s), 2 rewrite(s) and an answer can need 24 steps, "
+        "so hops and retries are skipped when they do not fit.",
+        "AGENT_MAX_LLM_CALLS is 8, but 3 link hop(s), 2 rewrite(s) and an answer can need 12 calls to the model, "
+        "so hops and retries are skipped when they do not fit.",
+    ]
+
+
+def test_the_hops_are_also_ended_by_the_pages_limit() -> None:
+    assert AgentLimits(24, 12, 2, max_link_hops=3, max_pages=1).hops == 1
+    assert AgentLimits(24, 12, 2, max_link_hops=1, max_pages=5).hops == 1
+    assert AgentLimits(24, 12, 2, max_link_hops=3, max_pages=0).hops == 0
+    assert AgentLimits(24, 12, 2).hops == 0  # without hops the limits are those of the retries alone
+
+
+def test_hops_that_cannot_happen_need_no_room() -> None:
+    assert AgentLimits(12, 8, 2, max_link_hops=0, max_pages=5).problems() == []
+    assert AgentLimits(12, 8, 2, max_link_hops=3, max_pages=0).problems() == []
+
+
 def test_the_default_limits_have_no_problem() -> None:
     assert LIMITS.problems() == []
 
@@ -532,7 +555,9 @@ def test_the_limits_come_from_the_settings(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setenv("AGENT_MAX_LLM_CALLS", "5")
     settings = Settings(_env_file=None)  # type: ignore[call-arg]
 
-    assert AgentLimits.from_settings(settings) == AgentLimits(max_steps=12, max_llm_calls=5, max_rewrites=2)
+    assert AgentLimits.from_settings(settings) == AgentLimits(
+        max_steps=24, max_llm_calls=5, max_rewrites=2, max_link_hops=3, max_pages=5
+    )
 
 
 # --- failures of the services ---

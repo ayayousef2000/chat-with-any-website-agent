@@ -4,7 +4,7 @@ An agentic RAG workflow built with [LangGraph](https://langchain-ai.github.io/la
 
 This is the agent version of [Chat With Any Website](https://github.com/ayayousef2000/chat-with-any-website), which answers questions about one page or PDF with a fixed pipeline. This project is separate: it has its own repository, API keys and vector database, and it copies modules from the original instead of importing them.
 
-> **Status.** The single-source agent works and is evaluated (see [Results](#results)). Following links to other pages of a site is the next step and is not built yet.
+> **Status.** The single-source agent works and is evaluated (see [Results](#results)). Following links to other pages of the same site is built but not measured yet: the results below were measured before it existed.
 
 ## How it works
 
@@ -17,8 +17,11 @@ question → analyze → retrieve → grade ─ enough ─→ generate → verif
                                      otherwise ───────────────────────────────→ abstain
 ```
 
+When the excerpts are not enough, the graph first tries `choose` → `follow` → `retrieve` (pages of the same site, see below) and only then `rewrite`.
+
 - **Retrieve.** A hybrid search (keywords and vectors) in Weaviate, then a Cohere rerank keeps the best few excerpts.
 - **Grade.** A small model decides whether the excerpts are enough to answer, and says what is missing when they are not.
+- **Follow links.** When the pages read so far are not enough, a small model is shown a short numbered list of the links of the pages that were not opened yet (the ones that share words with the question first) and chooses at most two by number, so it can only choose among links the page really has. Plain code decides which links may be offered at all: the same site only, standard web addresses, no files that cannot be read, and only pages that the site's `robots.txt` allows. The chosen pages are loaded like any source and searched together with the first page. At most `AGENT_MAX_LINK_HOPS` rounds and `AGENT_MAX_PAGES` pages for one question.
 - **Rewrite and retry.** When the evidence is weak, the query is rewritten and searched again, within a limit. A new search that finds nothing the agent has not already seen ends the question, because the same excerpts would get the same grade.
 - **Generate and verify.** A larger model writes the answer and cites the excerpts as `[1]`, `[2]`. Plain code then checks that every cited excerpt exists and that each cited sentence shares its content words with it. A rejected answer is corrected once.
 - **Abstain.** When the source does not cover the question, the answer says so and gives the reason.
@@ -101,12 +104,14 @@ Settings are read from the environment or from `.env`; `.env.example` lists all 
 | `GROQ_BACKUP_API_KEYS` | empty | More Groq keys, separated by commas, used in turn when one reaches its limit |
 | `SOURCE_CHECK_SECONDS` | 0 | A stored page checked less than this many seconds ago is not checked again; 0 checks at every question |
 | `SOURCE_MAX_AGE_HOURS` | 0 | A stored copy of a source older than this many hours is loaded again; 0 never does that |
-| `AGENT_MAX_STEPS` | 12 | The most graph steps for one question |
-| `AGENT_MAX_LLM_CALLS` | 8 | The most calls to the language model for one question |
+| `AGENT_MAX_STEPS` | 24 | The most graph steps for one question |
+| `AGENT_MAX_LLM_CALLS` | 12 | The most calls to the language model for one question |
 | `AGENT_MAX_REWRITES` | 2 | The most times the query is rewritten |
+| `AGENT_MAX_LINK_HOPS` | 3 | The most times the agent chooses links of the site to open; 0 keeps it on the pages it was given |
+| `AGENT_MAX_PAGES` | 5 | The most pages the agent loads by following links; 0 keeps it on the pages it was given |
 | `WEAVIATE_TENANT` | `development` | Keeps the data of different uses apart |
 
-The agent warns at startup when a limit is too small for the retries it allows.
+The agent warns at startup when a limit is too small for the link hops and retries it allows.
 
 ## Development
 

@@ -192,3 +192,4 @@ def test_the_system_for_a_run_is_built_with_a_patient_retrier(monkeypatch: pytes
     assert isinstance(call["retrier"], Retrier)
     assert call["retrier"].retryable == GROQ_RETRYABLE
     assert call["retrier"].policy.budget > 45.0
+    assert call["check_followed"] is False  # the pages of one run are not asked about again while it goes on

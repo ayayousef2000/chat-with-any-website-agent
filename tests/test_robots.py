@@ -328,3 +328,10 @@ def test_by_default_the_file_is_downloaded_with_the_safe_download(monkeypatch: p
 
     assert not checker.allows("https://docs.example/no")
     assert calls == [(ROBOTS_URL, 7.0, MAX_ROBOTS_BYTES)]
+
+
+def test_an_address_that_cannot_even_be_split_is_not_allowed() -> None:
+    checker, fake = _checker()
+
+    assert not checker.allows("http://[not-an-address/")
+    assert fake.asked == []

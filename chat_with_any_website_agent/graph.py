@@ -1,14 +1,17 @@
-"""The agent graph: search a source, grade what was found, retry with a better query, then answer or abstain.
+"""The agent graph: search a source, grade what was found, follow links or retry, then answer or abstain.
 
 An answer has checked citations. When the source does not cover the question, the graph says so instead.
 The nodes run in this order:
 
-1. ``analyze`` tidies the question.
-2. ``retrieve`` searches the source and keeps the best excerpts. After a rewrite, a search that finds only excerpts
+1. ``analyze`` tidies the question and lists the links of the pages it was given.
+2. ``retrieve`` searches the pages and keeps the best excerpts. After a rewrite, a search that finds only excerpts
    that were found before ends the question in ``abstain``: the same excerpts would get the same grade.
 3. ``grade`` asks a model whether the excerpts are enough. If they are, ``generate`` writes the answer. If they are
-   not and a retry fits in the limits, ``rewrite`` makes a better query and the graph goes back to ``retrieve``.
-   Otherwise the graph goes to ``abstain``.
+   not, the graph first looks for the answer on other pages of the site: ``choose`` shows a model a short list of the
+   links not opened yet, as numbers, and ``follow`` opens the ones it chose (the site's ``robots.txt`` allowing) and
+   the graph searches all the pages again. When no link is worth opening, or none can be opened any more, and a retry
+   fits in the limits, ``rewrite`` makes a better query and the graph goes back to ``retrieve``. Otherwise the graph
+   goes to ``abstain``.
 4. ``generate`` writes the answer. If the model says that the excerpts hold no answer the graph goes to ``abstain``,
    otherwise to ``verify``.
 5. ``verify`` checks the citations in plain code. If they hold, the graph ends with the answer. If they do not and
@@ -16,14 +19,15 @@ The nodes run in this order:
    which is checked again. Otherwise the graph goes to ``abstain``.
 6. ``abstain`` ends the graph with the message that the source does not cover the question.
 
-Three limits keep a question from running away: the retries (``max_rewrites``), the calls to the language model
+Five limits keep a question from running away: the retries (``max_rewrites``), the times links are chosen
+(``max_link_hops``), the pages loaded by following links (``max_pages``), the calls to the language model
 (``max_llm_calls``) and the nodes run (``max_steps``). The graph looks ahead, so that it stops before a limit is hit
 rather than in the middle of a path. LangGraph's own recursion limit stays as a last safeguard.
 """
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, Self
+from typing import TYPE_CHECKING, Any, Literal, Protocol, Self
 
 from langchain_core.exceptions import OutputParserException
 from langchain_core.output_parsers import StrOutputParser
@@ -31,8 +35,11 @@ from langgraph.errors import GraphRecursionError
 from langgraph.graph import END, START, StateGraph
 
 from chat_with_any_website_agent.citations import Citation, format_excerpts, verify_answer
+from chat_with_any_website_agent.links import shortlist_links
 from chat_with_any_website_agent.prompts import (
     ANSWER_PROMPT,
+    CHOICE_PARSER,
+    CHOOSE_PROMPT,
     GRADE_PARSER,
     GRADE_PROMPT,
     NOT_COVERED_MARKER,
@@ -41,6 +48,7 @@ from chat_with_any_website_agent.prompts import (
     REWRITE_PARSER,
     REWRITE_PROMPT,
     Grade,
+    format_links,
 )
 from chat_with_any_website_agent.state import AgentState, new_state
 
@@ -51,6 +59,8 @@ if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
 
     from chat_with_any_website_agent.config import Settings
+    from chat_with_any_website_agent.links import Link
+    from chat_with_any_website_agent.navigation import FollowResult
     from chat_with_any_website_agent.retriever import SourceRetriever
 
 logger = logging.getLogger(__name__)
@@ -63,6 +73,17 @@ RECURSION_MARGIN = 2
 ANSWER_STEPS = 3  # generate, verify and, when the check fails, abstain
 RETRY_STEPS = 6  # rewrite, retrieve, grade, and then an answer
 RETRY_CALLS = 3  # rewrite, grade and generate
+
+# Choosing links and opening them takes choose, follow, retrieve and grade, and then an answer. A hop that finds
+# nothing to open is shorter, so these are what a whole hop can cost.
+HOP_STEPS = 4
+HOP_CALLS = 2  # choose and grade
+FOLLOW_STEPS = HOP_STEPS + ANSWER_STEPS
+FOLLOW_CALLS = HOP_CALLS + 1
+
+# How many links the model is shown, and how many it may choose to open in one hop.
+MAX_CANDIDATES = 40
+MAX_LINKS_PER_HOP = 2
 
 # A rejected answer is corrected once, if what is left of the limits allows it.
 MAX_REPAIRS = 1
@@ -77,7 +98,7 @@ STEP_LIMIT_REASON = "The limit of steps was reached."
 UNREADABLE_GRADE_REASON = "The verdict on the excerpts could not be read."
 NOTHING_NEW_NOTE = "A new search found nothing new."
 
-type Route = Literal["generate", "rewrite", "abstain"]
+type Route = Literal["generate", "choose", "rewrite", "abstain"]
 
 
 @dataclass(frozen=True)
@@ -88,11 +109,15 @@ class AgentLimits:
         max_steps: The most nodes the graph runs.
         max_llm_calls: The most calls to the language model.
         max_rewrites: The most times the search query is rewritten.
+        max_link_hops: The most times the agent chooses links to open. Zero keeps it on the pages it was given.
+        max_pages: The most pages loaded by following links. Zero keeps it on the pages it was given.
     """
 
     max_steps: int
     max_llm_calls: int
     max_rewrites: int
+    max_link_hops: int = 0
+    max_pages: int = 0
 
     @classmethod
     def from_settings(cls, settings: Settings) -> Self:
@@ -101,29 +126,41 @@ class AgentLimits:
             max_steps=settings.agent_max_steps,
             max_llm_calls=settings.agent_max_llm_calls,
             max_rewrites=settings.agent_max_rewrites,
+            max_link_hops=settings.agent_max_link_hops,
+            max_pages=settings.agent_max_pages,
         )
 
-    def problems(self) -> list[str]:
-        """Say which limits are too small for the retries that are allowed.
+    @property
+    def hops(self) -> int:
+        """The most hops that can happen: each one loads at least one page, so the pages limit also ends them."""
+        return min(self.max_link_hops, self.max_pages)
 
-        A limit that is too small is not an error: the agent only skips the retries that do not fit. But a copied
-        ``.env`` can keep an old, smaller value without anybody noticing, so the notes are shown when the agent starts.
+    def problems(self) -> list[str]:
+        """Say which limits are too small for the hops and retries that are allowed.
+
+        A limit that is too small is not an error: the agent only skips the hops and retries that do not fit. But a
+        copied ``.env`` can keep an old, smaller value without anybody noticing, so the notes are shown when the agent
+        starts.
 
         Returns:
-            A note for each limit that is too small to complete every retry and an answer. Empty when they all fit.
+            A note for each limit that is too small to complete every hop, every retry and an answer. Empty when they
+            all fit.
         """
-        steps_needed = 3 * self.max_rewrites + 3 + ANSWER_STEPS  # read, each search and grade, each rewrite, an answer
-        calls_needed = 2 * self.max_rewrites + 2  # each grade, each rewrite and the answer
+        # read, each search and grade, each hop, each rewrite, an answer
+        steps_needed = HOP_STEPS * self.hops + 3 * self.max_rewrites + 3 + ANSWER_STEPS
+        calls_needed = HOP_CALLS * self.hops + 2 * self.max_rewrites + 2  # each choice, grade and rewrite, the answer
+        wanted = (f"{self.hops} link hop(s), " if self.hops else "") + f"{self.max_rewrites} rewrite(s) and an answer"
+        skipped = "hops and retries" if self.hops else "retries"
         notes = []
         if self.max_steps < steps_needed:
             notes.append(
-                f"AGENT_MAX_STEPS is {self.max_steps}, but {self.max_rewrites} rewrite(s) and an answer can need "
-                f"{steps_needed} steps, so retries are skipped when they do not fit."
+                f"AGENT_MAX_STEPS is {self.max_steps}, but {wanted} can need {steps_needed} steps, "
+                f"so {skipped} are skipped when they do not fit."
             )
         if self.max_llm_calls < calls_needed:
             notes.append(
-                f"AGENT_MAX_LLM_CALLS is {self.max_llm_calls}, but {self.max_rewrites} rewrite(s) and an answer can "
-                f"need {calls_needed} calls to the model, so retries are skipped when they do not fit."
+                f"AGENT_MAX_LLM_CALLS is {self.max_llm_calls}, but {wanted} can need {calls_needed} calls to the "
+                f"model, so {skipped} are skipped when they do not fit."
             )
         return notes
 
@@ -141,6 +178,7 @@ class AgentAnswer:
         citations: The excerpts the answer cites. Empty when it did not answer.
         excerpts: The texts of the excerpts the answer is based on.
         sources: The addresses of the sources the answer cites.
+        followed: The addresses of the pages the agent opened by following links, in the order it opened them.
         steps: A line for each step the agent took, in order.
         llm_calls: How many calls to the language model were made.
     """
@@ -152,8 +190,21 @@ class AgentAnswer:
     citations: tuple[Citation, ...] = ()
     excerpts: tuple[str, ...] = ()
     sources: tuple[str, ...] = ()
+    followed: tuple[str, ...] = ()
     steps: tuple[str, ...] = ()
     llm_calls: int = 0
+
+
+class LinkSource(Protocol):
+    """What the agent needs to follow links; ``LinkFollower`` provides it."""
+
+    def links_of(self, url: str) -> tuple[Link, ...]:
+        """The links of a stored page."""
+        ...
+
+    def follow(self, url: str) -> FollowResult:
+        """Open a link and load the page behind it."""
+        ...
 
 
 def next_step(state: AgentState, limits: AgentLimits) -> Route:
@@ -164,14 +215,25 @@ def next_step(state: AgentState, limits: AgentLimits) -> Route:
         limits: The limits for the question.
 
     Returns:
-        ``generate`` when the excerpts are enough and an answer fits in the limits, ``rewrite`` when they are not
-        enough and a whole retry fits, otherwise ``abstain``.
+        ``generate`` when the excerpts are enough and an answer fits in the limits. When they are not enough:
+        ``choose`` when there are links left to open and a whole hop fits, then ``rewrite`` when a whole retry fits,
+        otherwise ``abstain``.
     """
     calls_left = limits.max_llm_calls - state["llm_calls"]
     steps_used = len(state["steps"])
     if state["grade"].sufficient:
         fits = calls_left >= 1 and steps_used + ANSWER_STEPS <= limits.max_steps
         return "generate" if fits else "abstain"
+    hop = (
+        bool(state.get("frontier"))
+        and not state.get("links_closed", False)
+        and state.get("hops", 0) < limits.max_link_hops
+        and len(state.get("followed", [])) < limits.max_pages
+        and calls_left >= FOLLOW_CALLS
+        and steps_used + FOLLOW_STEPS <= limits.max_steps
+    )
+    if hop:
+        return "choose"
     retry = (
         state["rewrites"] < limits.max_rewrites
         and calls_left >= RETRY_CALLS
@@ -189,21 +251,26 @@ class SourceAgent:
         answer_model: BaseChatModel,
         grade_model: BaseChatModel,
         limits: AgentLimits,
+        links: LinkSource | None = None,
     ) -> None:
         """Create the agent.
 
         Args:
             retriever: Finds the excerpts. Its sources are replaced by the ones of each question.
             answer_model: The model that writes the answer, for example the large Groq model.
-            grade_model: The model that grades the excerpts and rewrites the query, for example the small one.
+            grade_model: The model that grades the excerpts, rewrites the query and chooses links, for example the
+                small one.
             limits: The limits for one question.
+            links: Reads the links of stored pages and opens them. Without it the agent stays on the pages it is given.
         """
         self._retriever = retriever
         self._limits = limits
+        self._links = links
         json_mode = {"response_format": {"type": "json_object"}, "temperature": 0}
         grader = grade_model.bind(**json_mode)
         self._grade_chain = GRADE_PROMPT | grader | GRADE_PARSER
         self._rewrite_chain = REWRITE_PROMPT | grader | REWRITE_PARSER
+        self._choose_chain = CHOOSE_PROMPT | grader | CHOICE_PARSER
         writer = answer_model.bind(temperature=0)
         self._answer_chain = ANSWER_PROMPT | writer | StrOutputParser()
         self._repair_chain = REPAIR_PROMPT | writer | StrOutputParser()
@@ -240,6 +307,8 @@ class SourceAgent:
         graph.add_node("analyze", self._analyze)
         graph.add_node("retrieve", self._retrieve)
         graph.add_node("grade", self._grade)
+        graph.add_node("choose", self._choose)
+        graph.add_node("follow", self._follow)
         graph.add_node("rewrite", self._rewrite)
         graph.add_node("generate", self._generate)
         graph.add_node("verify", self._verify)
@@ -249,7 +318,17 @@ class SourceAgent:
         graph.add_edge("analyze", "retrieve")
         graph.add_conditional_edges("retrieve", _after_retrieve, {"grade": "grade", "abstain": "abstain"})
         graph.add_conditional_edges(
-            "grade", self._after_grade, {"generate": "generate", "rewrite": "rewrite", "abstain": "abstain"}
+            "grade",
+            self._after_grade,
+            {"generate": "generate", "choose": "choose", "rewrite": "rewrite", "abstain": "abstain"},
+        )
+        graph.add_conditional_edges(
+            "choose", self._after_choose, {"follow": "follow", "rewrite": "rewrite", "abstain": "abstain"}
+        )
+        graph.add_conditional_edges(
+            "follow",
+            self._after_follow,
+            {"retrieve": "retrieve", "choose": "choose", "rewrite": "rewrite", "abstain": "abstain"},
         )
         graph.add_edge("rewrite", "retrieve")
         graph.add_conditional_edges("generate", _after_generate, {"verify": "verify", "abstain": "abstain"})
@@ -262,7 +341,24 @@ class SourceAgent:
 
     def _analyze(self, state: AgentState) -> AgentState:
         question = " ".join(state["question"].split())
-        return {"question": question, "query": question, "steps": ["Read the question."]}
+        return {
+            "question": question,
+            "query": question,
+            "frontier": self._frontier(state["urls"], []),
+            "steps": ["Read the question."],
+        }
+
+    def _frontier(self, pages: Sequence[str] | None, tried: Sequence[str]) -> list[Link]:
+        """The links of the pages that were not opened yet, in the order of the pages, each address once."""
+        if self._links is None or pages is None or self._limits.hops == 0:
+            return []
+        skip = {*pages, *tried}
+        found: dict[str, Link] = {}
+        for page in pages:
+            for link in self._links.links_of(page):
+                if link.url not in skip and link.url not in found:
+                    found[link.url] = link
+        return list(found.values())
 
     def _retrieve(self, state: AgentState) -> AgentState:
         retriever = self._retriever.model_copy(update={"urls": state["urls"]})
@@ -300,6 +396,84 @@ class SourceAgent:
 
     def _after_grade(self, state: AgentState) -> Route:
         return next_step(state, self._limits)
+
+    def _choose(self, state: AgentState) -> AgentState:
+        """Ask the model which of the links not opened yet are likely to hold what the pages read so far lack."""
+        missing = state["grade"].reason or NOT_ENOUGH_REASON
+        shortlist = shortlist_links(state["frontier"], f"{state['question']} {missing}", MAX_CANDIDATES)
+        room = min(MAX_LINKS_PER_HOP, self._limits.max_pages - len(state["followed"]))
+        values = {
+            "question": state["question"],
+            "missing": missing,
+            "links": format_links(shortlist),
+            "limit": room,
+        }
+        try:
+            numbers = self._choose_chain.invoke(values).links
+        except OutputParserException:
+            numbers = []
+        chosen: list[Link] = []
+        for number in numbers:  # the model gives numbers, so it can only choose among the links it was shown
+            if 1 <= number <= len(shortlist) and shortlist[number - 1] not in chosen:
+                chosen.append(shortlist[number - 1])
+            if len(chosen) == room:
+                break
+        result: AgentState = {
+            "hops": state["hops"] + 1,
+            "llm_calls": state["llm_calls"] + 1,
+            "chosen": [link.url for link in chosen],
+        }
+        if chosen:
+            result["steps"] = ["Chose links to open: " + ", ".join(_describe_link(link) for link in chosen) + "."]
+        else:
+            result["links_closed"] = True  # asking again would get the same answer
+            result["steps"] = ["No link looked worth opening."]
+        return result
+
+    def _after_choose(self, state: AgentState) -> Literal["follow", "rewrite", "abstain"]:
+        if state["chosen"]:
+            return "follow"
+        # No link is left to choose, and the excerpts are not enough: only a retry can go on.
+        return "rewrite" if next_step(state, self._limits) == "rewrite" else "abstain"
+
+    def _follow(self, state: AgentState) -> AgentState:
+        """Open the chosen links: each page the site allows is loaded and searched from now on."""
+        if self._links is None:  # pragma: no cover - a link is only chosen when there is a way to open it
+            raise AssertionError("links were chosen without a way to open them")
+        pages = list(state["urls"] or [])
+        followed = list(state["followed"])
+        tried = list(state["tried"])
+        parts = []
+        loaded = 0
+        for url in state["chosen"]:
+            tried.append(url)
+            result = self._links.follow(url)
+            if not result.loaded:
+                parts.append(f"could not open {url} ({result.note})")
+            elif result.url in pages:
+                parts.append(f"{result.url} was already read")
+            else:
+                pages.append(result.url)
+                followed.append(result.url)
+                loaded += 1
+                parts.append(f"opened {result.url}")
+        return {
+            "urls": pages,
+            "followed": followed,
+            "tried": tried,
+            "loaded": loaded,
+            "chosen": [],
+            "frontier": self._frontier(pages, tried),
+            "steps": ["Followed links: " + "; ".join(parts) + "."],
+        }
+
+    def _after_follow(self, state: AgentState) -> Literal["retrieve", "choose", "rewrite", "abstain"]:
+        if state["loaded"]:
+            return "retrieve"
+        route = next_step(state, self._limits)  # nothing new was loaded: choose again, or retry, or give up
+        if route == "choose":
+            return "choose"
+        return "rewrite" if route == "rewrite" else "abstain"
 
     def _rewrite(self, state: AgentState) -> AgentState:
         values = {
@@ -367,6 +541,11 @@ class SourceAgent:
         }
 
 
+def _describe_link(link: Link) -> str:
+    """A link for a line of the steps: its text and its address, or only the address when it has no text."""
+    return f'"{link.text}" ({link.url})' if link.text else link.url
+
+
 def _excerpt_key(document: Document) -> str:
     """What identifies an excerpt: its source and its place in the source."""
     return f"{document.metadata.get('url', '')}#{document.metadata.get('chunk_index', '')}"
@@ -414,6 +593,7 @@ def _answer(state: AgentState) -> AgentAnswer:
         citations=citations,
         excerpts=tuple(document.page_content for document in state.get("documents", [])),
         sources=tuple(dict.fromkeys(citation.url for citation in citations)),
+        followed=tuple(state.get("followed", [])),
         steps=tuple(state.get("steps", [])),
         llm_calls=state.get("llm_calls", 0),
     )

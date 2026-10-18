@@ -696,3 +696,50 @@ def test_the_limits_come_from_the_settings(monkeypatch: pytest.MonkeyPatch) -> N
 
     assert calls == [(URL, {"timeout": 7.0, "max_bytes": 1234, "pdf_max_bytes": 5678})]
     assert len(store.replaced) == 1
+
+
+# --- staying on a site ---
+
+
+def _moved_to(url: str) -> FakeFetch:
+    return FakeFetch(FetchedDocument(kind="html", body=ARTICLE, url=url))
+
+
+def test_a_page_that_stays_on_its_site_is_stored() -> None:
+    store, embedder = FakeStore(), FakeEmbedder()
+
+    result = _ingestor(store, embedder, _moved_to("https://www.example.com/b")).ingest(URL, site="example.com")
+
+    assert not result.reused
+    assert len(store.replaced) == 1
+
+
+def test_a_page_that_a_redirect_leads_to_another_site_is_refused_and_nothing_is_stored() -> None:
+    store, embedder = FakeStore(), FakeEmbedder()
+
+    with pytest.raises(FetchError) as caught:
+        _ingestor(store, embedder, _moved_to("https://elsewhere.example/page")).ingest(URL, site="example.com")
+
+    assert str(caught.value) == ingest.OFF_SITE_MESSAGE
+    assert store.replaced == []
+    assert embedder.batches == []
+
+
+def test_any_site_is_allowed_when_none_is_named() -> None:
+    store, embedder = FakeStore(), FakeEmbedder()
+
+    _ingestor(store, embedder, _moved_to("https://elsewhere.example/page")).ingest(URL)
+
+    assert len(store.replaced) == 1
+
+
+def test_a_changed_page_that_now_leads_to_another_site_keeps_the_stored_copy() -> None:
+    moved = FetchedDocument(kind="html", body=ARTICLE, url="https://elsewhere.example/page")
+    ingestor, store, _, _, embedder = _checking(_record(content_hash="the fingerprint of the old text"), moved)
+
+    result = ingestor.ingest(URL, site="example.com")
+
+    assert result.reused
+    assert result.problem == ingest.OFF_SITE_MESSAGE
+    assert store.replaced == []
+    assert embedder.batches == []
