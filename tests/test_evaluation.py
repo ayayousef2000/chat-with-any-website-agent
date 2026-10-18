@@ -1,6 +1,7 @@
 """Tests of the evaluation harness with a fake system and a fake judge: no service is used."""
 
 import json
+from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -278,6 +279,56 @@ def test_an_answer_with_no_excerpts_has_no_retrieval_score() -> None:
     assert report.results[0].retrieval_hit is None
 
 
+@pytest.mark.parametrize(
+    ("excerpt", "phrase"),
+    [
+        ("The `pass` statement does nothing.", "The pass statement does nothing"),
+        ("Words in **bold** and _italic_ text", "words in bold and italic text"),
+        ("class instantiation invokes \\_\\_init\\_\\_()", "invokes __init__()"),
+        ("two\n  lines    of text", "two lines of text"),
+    ],
+)
+def test_an_expected_phrase_is_found_whatever_the_formatting_of_the_excerpt(excerpt: str, phrase: str) -> None:
+    usage = UsageCounter()
+
+    class Formatted(FakeSystem):
+        def ask(self, case: Case) -> Outcome:
+            return Outcome(answer="an answer", excerpts=(excerpt,))
+
+    report = run_evaluation(Formatted(usage), [_case("q1", must_contain=(phrase,))], FakeJudge(), usage)
+
+    assert report.results[0].retrieval_hit is True
+
+
+def test_how_the_system_got_to_its_answer_is_kept_in_the_result() -> None:
+    usage = UsageCounter()
+
+    class Explaining(FakeSystem):
+        def ask(self, case: Case) -> Outcome:
+            return Outcome(
+                answer="The source does not cover this question.",
+                reason="The answer cites no excerpt.",
+                steps=("Searched.", "Graded.", "Decided not to answer."),
+                draft="A rejected answer.",
+            )
+
+    report = run_evaluation(Explaining(usage), [_case("q1")], FakeJudge(), usage)
+
+    result = report.results[0]
+    assert result.agent_reason == "The answer cites no excerpt."
+    assert result.agent_steps == ("Searched.", "Graded.", "Decided not to answer.")
+    assert result.agent_draft == "A rejected answer."
+
+
+def test_a_system_that_does_not_explain_itself_leaves_those_fields_empty() -> None:
+    usage = UsageCounter()
+
+    report = run_evaluation(FakeSystem(usage), [_case("q1")], FakeJudge(), usage)
+
+    result = report.results[0]
+    assert (result.agent_reason, result.agent_draft, result.agent_steps) == (None, None, ())
+
+
 def test_a_reply_of_the_judge_that_cannot_be_read_leaves_the_scores_empty_and_says_so() -> None:
     usage = UsageCounter()
 
@@ -410,6 +461,36 @@ def test_results_survive_being_saved_and_read_again(tmp_path: Path) -> None:
     save_results(path, report.results)
 
     assert load_results(path) == report.results
+
+
+def test_the_steps_of_a_result_survive_being_saved_and_read_again(tmp_path: Path) -> None:
+    usage = UsageCounter()
+
+    class Explaining(FakeSystem):
+        def ask(self, case: Case) -> Outcome:
+            return Outcome(answer="a", reason="why", steps=("one", "two"), draft="d")
+
+    report = run_evaluation(Explaining(usage), [_case("q1")], FakeJudge(), usage)
+    path = tmp_path / "run.json"
+
+    save_results(path, report.results)
+
+    (loaded,) = load_results(path)
+    assert loaded == report.results[0]
+    assert loaded.agent_steps == ("one", "two")  # a tuple again, not the list that JSON holds
+
+
+def test_results_saved_before_the_steps_were_kept_can_still_be_read(tmp_path: Path) -> None:
+    usage = UsageCounter()
+    report = run_evaluation(FakeSystem(usage), [_case("q1")], FakeJudge(), usage)
+    old = asdict(report.results[0])
+    for name in ("agent_reason", "agent_draft", "agent_steps"):
+        del old[name]
+    path = _write(tmp_path / "old.json", [old])
+
+    (loaded,) = load_results(path)
+
+    assert loaded == report.results[0]
 
 
 def test_a_file_that_is_not_a_list_of_results_is_refused(tmp_path: Path) -> None:

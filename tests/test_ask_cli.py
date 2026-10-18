@@ -62,7 +62,7 @@ class FakeRuntime:
         self.ingested.append((url, refresh))
         if self.error is not None:
             raise self.error
-        return IngestResult(url=NORMALIZED, reused=False, title="Control Flow", chunk_count=4)
+        return IngestResult(url=f"{url}/", reused=False, title="Control Flow", chunk_count=4)  # normalized
 
     def _ask(self, question: str, urls: list[str]) -> AgentAnswer:
         self.asked.append((question, urls))
@@ -188,6 +188,34 @@ def test_the_source_is_loaded_and_the_question_asked_about_it(
     out = capsys.readouterr().out
     assert "The pass statement does nothing [1]." in out
     assert "Steps:" in out
+
+
+def test_further_sources_are_loaded_and_searched_too(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runtime, _ = _wire(monkeypatch)
+    other, third = "https://docs.example/data", "https://docs.example/errors"
+
+    code = main([URL, "Which one?", "--also", other, "--also", third, "--refresh"])
+
+    assert code == EXIT_OK
+    assert runtime.ingested == [(URL, True), (other, True), (third, True)]
+    assert runtime.asked == [("Which one?", [NORMALIZED, f"{other}/", f"{third}/"])]
+    out = capsys.readouterr().out
+    assert "Loaded the source (4 chunk(s) stored)." in out
+    assert f"Loaded {other}/ (4 chunk(s) stored)." in out
+    assert f"Loaded {third}/ (4 chunk(s) stored)." in out
+
+
+def test_the_stored_copies_of_further_sources_are_said_to_be_reused() -> None:
+    first = IngestResult(url=NORMALIZED, reused=True)
+    extra = IngestResult(url="https://docs.example/data/", reused=True)
+
+    text = format_answer(first, ANSWERED, UsageCounter(), 1.0, extras=[extra])
+
+    assert text.startswith(
+        "Reused the stored copy of the source.\nReused the stored copy of https://docs.example/data/.\n\n"
+    )
 
 
 def test_an_abstention_is_not_an_error(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

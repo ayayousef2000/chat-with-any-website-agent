@@ -94,11 +94,17 @@ class Outcome:
         answer: The answer, as the person would see it.
         excerpts: The texts the answer is based on, which the judge checks the answer against.
         sources: The addresses of the sources that were used.
+        reason: Why the system did not answer from the source, when it did not.
+        steps: What the system did to get there, one line for each step.
+        draft: An answer that the system wrote and then refused, when that is why it did not answer.
     """
 
     answer: str
     excerpts: tuple[str, ...] = ()
     sources: tuple[str, ...] = ()
+    reason: str | None = None
+    steps: tuple[str, ...] = ()
+    draft: str | None = None
 
 
 class System(Protocol):
@@ -138,7 +144,11 @@ class Verdict:
 
 @dataclass(frozen=True)
 class Result:
-    """The scores and the cost of one evaluated question."""
+    """The scores and the cost of one evaluated question.
+
+    The ``agent_`` fields say how the system got to its answer, so that a wrong answer can be understood from the
+    results file. They are empty for a system that does not report them and in results saved before they existed.
+    """
 
     url: str
     question: str
@@ -154,6 +164,9 @@ class Result:
     cohere_calls: int
     groq_calls: int
     groq_tokens: int
+    agent_reason: str | None = None
+    agent_draft: str | None = None
+    agent_steps: tuple[str, ...] = ()
 
     @property
     def key(self) -> str:
@@ -402,15 +415,31 @@ def _evaluate(system: System, judge: ChatClient, usage: UsageCounter, case: Case
         cohere_calls=calls_after.get(COHERE, 0) - calls_before.get(COHERE, 0),
         groq_calls=calls_after.get(GROQ, 0) - calls_before.get(GROQ, 0),
         groq_tokens=tokens_after.get(GROQ, 0) - tokens_before.get(GROQ, 0),
+        agent_reason=outcome.reason,
+        agent_draft=outcome.draft,
+        agent_steps=outcome.steps,
     )
 
 
+# Markdown marks that the text of a page may have around words: `code`, *emphasis*, _emphasis_ and escapes.
+_FORMATTING = str.maketrans("", "", "`*_\\")
+
+
+def _plain(text: str) -> str:
+    """Lower-case a text without its Markdown marks and with its white space made single, to compare phrases."""
+    return " ".join(text.translate(_FORMATTING).casefold().split())
+
+
 def _retrieval_hit(case: Case, outcome: Outcome) -> bool | None:
-    """Whether the excerpts contain an expected phrase; ``None`` when that cannot be told."""
+    """Whether the excerpts contain an expected phrase; ``None`` when that cannot be told.
+
+    The comparison ignores capitals, white space and Markdown marks, so that "The pass statement does nothing"
+    is found in "The `pass` statement does nothing".
+    """
     if not case.answerable or not case.must_contain or not outcome.excerpts:
         return None
-    text = "\n".join(outcome.excerpts).casefold()
-    return any(phrase.casefold() in text for phrase in case.must_contain)
+    text = _plain("\n".join(outcome.excerpts))
+    return any(_plain(phrase) in text for phrase in case.must_contain)
 
 
 def run_and_save(
@@ -487,6 +516,13 @@ def load_results(path: Path) -> list[Result]:
     """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        return [Result(**item) for item in data]
+        return [_result(item) for item in data]
     except (OSError, ValueError, TypeError) as exc:
         raise DatasetError(f"{path}: the file does not hold evaluation results ({type(exc).__name__}).") from exc
+
+
+def _result(item: Any) -> Result:
+    """One saved result. A result saved before the ``agent_`` fields existed has them empty."""
+    fields = dict(item)
+    fields["agent_steps"] = tuple(fields.get("agent_steps", ()))  # JSON has no tuples
+    return Result(**fields)

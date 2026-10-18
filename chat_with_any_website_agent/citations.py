@@ -1,9 +1,13 @@
 """Excerpts for the model, and a check that an answer is backed by the excerpts it cites.
 
-The model sees the excerpts as a numbered list and cites them as ``[1]`` or ``[1][2]``. The check is plain code, with
-no model: every number must be an excerpt that exists, and every sentence that cites must share its content words with
-the excerpts it cites. It catches an invented or misplaced citation. It cannot judge meaning, and it cannot compare
-text in two different scripts, so a sentence in another script than its excerpt is only checked for its numbers.
+The model sees the excerpts as a numbered list and cites them as ``[1]`` or ``[1][2]``. Some models write the brackets
+in other styles (lenticular or full-width brackets, with or without a dagger and a label after the number), so
+those are read as citations too and are rewritten as ``[1]``.
+
+The check is plain code, with no model: every number must be an excerpt that exists, and every sentence that cites
+must share its content words with the excerpts it cites. It catches an invented or misplaced citation. It cannot
+judge meaning, and it cannot compare text in two different scripts, so a sentence in another script than its
+excerpt is only checked for its numbers.
 """
 
 import re
@@ -38,7 +42,12 @@ _ARABIC_QUESTION_MARK = chr(0x061F)
 _ARABIC_RANGES = ((0x0600, 0x06FF), (0x0750, 0x077F))  # Arabic and Arabic Supplement
 _LATIN_RANGE = (0x00C0, 0x024F)  # Latin letters with accents, besides the ASCII ones
 
-_MARKER = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\]")
+# The square brackets, the black lenticular brackets and the full-width square brackets, and the dagger that some
+# models put between the number and a label.
+_OPENING = re.escape("[" + chr(0x3010) + chr(0xFF3B))
+_CLOSING = re.escape("]" + chr(0x3011) + chr(0xFF3D))
+_DAGGER = chr(0x2020)
+_MARKER = re.compile(rf"[{_OPENING}](\d+(?:\s*,\s*\d+)*)(?:{_DAGGER}[^{_CLOSING}]*)?[{_CLOSING}]")
 # A sentence ends at a full stop, a question or exclamation mark or at a line break, but not before a citation, so
 # that "... nothing. [1]" stays one sentence.
 _SENTENCE_BREAK = re.compile(rf"(?<=[.!?{_ARABIC_QUESTION_MARK}])\s+(?!\[)|\n+")
@@ -72,11 +81,13 @@ class Verification:
         valid: ``True`` when the answer cites at least one excerpt and every citation holds.
         citations: The excerpts the answer cites, by number. Empty when the answer is not valid.
         problem: What is wrong with the answer. ``None`` when it is valid.
+        answer: The answer with every citation written as ``[1]``, whatever style the model used.
     """
 
     valid: bool
     citations: tuple[Citation, ...] = ()
     problem: str | None = None
+    answer: str = ""
 
 
 def format_excerpts(documents: Sequence[Document], max_chars: int = EXCERPT_CHARS) -> str:
@@ -109,21 +120,37 @@ def verify_answer(answer: str, documents: Sequence[Document], *, min_support: fl
         min_support: The share of the content words of a cited sentence that must appear in its excerpts.
 
     Returns:
-        Whether the answer holds. When it does, the excerpts it cites in order of their numbers.
+        Whether the answer holds, and the answer with its citations written as ``[1]``. When it holds, also the
+        excerpts it cites in order of their numbers.
     """
+    answer = normalize_citations(answer)
     numbers = _numbers(answer)
     if not numbers:
-        return Verification(valid=False, problem=NO_CITATION_PROBLEM)
+        return Verification(valid=False, problem=NO_CITATION_PROBLEM, answer=answer)
     missing = sorted({number for number in numbers if not 1 <= number <= len(documents)})
     if missing:
-        return Verification(valid=False, problem=f"The answer cites excerpt {missing[0]}, which does not exist.")
+        problem = f"The answer cites excerpt {missing[0]}, which does not exist."
+        return Verification(valid=False, problem=problem, answer=answer)
     for sentence in _SENTENCE_BREAK.split(answer):
         cited = sorted(set(_numbers(sentence)))
         if cited and not _is_supported(sentence, [documents[number - 1] for number in cited], min_support):
             problem = f"A sentence is not supported by the excerpts it cites: {sentence.strip()}"
-            return Verification(valid=False, problem=problem)
+            return Verification(valid=False, problem=problem, answer=answer)
     citations = tuple(_citation(number, documents[number - 1]) for number in sorted(set(numbers)))
-    return Verification(valid=True, citations=citations)
+    return Verification(valid=True, citations=citations, answer=answer)
+
+
+def normalize_citations(answer: str) -> str:
+    """Write every citation of an answer as ``[1]``, whatever brackets the model used.
+
+    Args:
+        answer: The answer of the model.
+
+    Returns:
+        The answer with citations in lenticular or full-width brackets, or with a label after the number,
+        rewritten as plain ``[1]``. Plain ``[1]`` and ``[1, 2]`` are kept as they are.
+    """
+    return _MARKER.sub(lambda match: f"[{match.group(1)}]", answer)
 
 
 def _label(document: Document) -> str:
