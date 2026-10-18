@@ -193,6 +193,45 @@ def test_the_judge_is_given_the_question_the_reference_the_excerpts_and_the_answ
     assert options == {"response_format": {"type": "json_object"}, "temperature": 0}
 
 
+class SequenceJudge(FakeJudge):
+    """A judge that gives the replies it was given, one after the other, and then the last one again."""
+
+    def __init__(self, *replies: str) -> None:
+        super().__init__(replies[-1])
+        self.replies = list(replies)
+
+    def complete(self, messages: Any, **options: Any) -> ChatReply:
+        self.text = self.replies.pop(0) if len(self.replies) > 1 else self.replies[0]
+        return super().complete(messages, **options)
+
+
+def test_a_judge_that_gives_an_empty_reply_is_asked_once_more() -> None:
+    judge = SequenceJudge("", GOOD_VERDICT)
+
+    verdict = judge_answer(judge, Case(url="u", question="q", reference="r"), Outcome(answer="a"))
+
+    assert verdict is not None
+    assert (verdict.faithful, verdict.correct) == (True, True)
+    assert len(judge.calls) == 2
+
+
+def test_a_judge_that_stays_unreadable_leaves_the_question_unscored_after_two_attempts() -> None:
+    judge = SequenceJudge("", "not json")
+
+    verdict = judge_answer(judge, Case(url="u", question="q", reference="r"), Outcome(answer="a"))
+
+    assert verdict is None
+    assert len(judge.calls) == 2
+
+
+def test_a_judge_that_reads_the_first_time_is_asked_only_once() -> None:
+    judge = FakeJudge()
+
+    judge_answer(judge, Case(url="u", question="q", reference="r"), Outcome(answer="a"))
+
+    assert len(judge.calls) == 1
+
+
 def test_an_unanswerable_question_has_no_reference_and_a_missing_excerpt_list_is_marked() -> None:
     judge = FakeJudge()
 

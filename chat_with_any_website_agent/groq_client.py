@@ -50,6 +50,19 @@ CHARS_PER_TOKEN = 3
 DEFAULT_OUTPUT_TOKENS = 1024
 
 
+# The error code of a request in JSON mode whose reply was not valid JSON.
+JSON_FAILED_CODE = "json_validate_failed"
+
+
+def _failed_json(error: groq.BadRequestError) -> str | None:
+    """What the model produced when Groq refused it as invalid JSON, or ``None`` for any other bad request."""
+    body = error.body
+    detail = body.get("error") if isinstance(body, dict) else None
+    if isinstance(detail, dict) and detail.get("code") == JSON_FAILED_CODE:
+        return str(detail.get("failed_generation") or "").strip()
+    return None
+
+
 def patient_retrier() -> Retrier:
     """A retrier for a run that may wait for a limit to lift, such as an evaluation, instead of a person who waits."""
     return Retrier(GROQ_RETRYABLE, RetryPolicy(attempts=5, max_delay=60.0, budget=240.0))
@@ -248,7 +261,20 @@ class GroqClient:
         if self._usage is not None:
             self._usage.ensure_tokens_left(GROQ)
             self._usage.record_call(GROQ)
-        completion = self._clients[index].chat.completions.create(model=self._model, messages=list(messages), **options)
+        try:
+            completion = self._clients[index].chat.completions.create(
+                model=self._model, messages=list(messages), **options
+            )
+        except groq.BadRequestError as error:
+            failed = _failed_json(error)
+            if failed is None:
+                raise
+            # In JSON mode Groq refuses a reply that is not valid JSON, and an empty one is not. The reply is
+            # handed on as the text it was, which every caller already treats as unreadable.
+            logger.warning("Groq key %d could not make valid JSON for a request", index + 1)
+            with self._lock:
+                self._current = index
+            return ChatReply(text=failed, prompt_tokens=0, completion_tokens=0, key_number=index + 1)
         with self._lock:
             self._current = index
         used = completion.usage
