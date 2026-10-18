@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     eval_max_groq_calls: int = Field(default=200, gt=0)
     eval_max_groq_tokens: int = Field(default=120_000, gt=0)
     eval_judge_model: str = "openai/gpt-oss-20b"
+    # The baseline that crawls a site before answering: how many pages it loads, and how many links deep it goes.
+    eval_crawl_max_pages: int = Field(default=40, gt=0)
+    eval_crawl_max_depth: int = Field(default=2, gt=0)
 
     @property
     def groq_keys(self) -> tuple[SecretStr, ...]:

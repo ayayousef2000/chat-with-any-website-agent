@@ -228,3 +228,126 @@ def test_a_run_can_be_limited_to_a_few_questions(tmp_path: Path, monkeypatch: py
     main(["run", dataset, "--system", "fake", "--out", str(out), "--limit", "1"])
 
     assert len(json.loads(out.read_text())) == 1
+
+
+# --- choosing the questions, and starting from an empty tenant ---
+
+
+def test_a_run_can_be_limited_to_one_category(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _wire(monkeypatch, {})
+    out = tmp_path / "out.json"
+    dataset = str(_write(tmp_path / "questions.json", PAGES))
+
+    code = main(["run", dataset, "--system", "fake", "--out", str(out), "--category", "multi_page"])
+
+    assert code == EXIT_OK
+    assert [result["question"] for result in json.loads(out.read_text())] == ["q1"]
+
+
+def test_a_category_can_be_repeated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _wire(monkeypatch, {})
+    out = tmp_path / "out.json"
+    dataset = str(_write(tmp_path / "questions.json", PAGES))
+    categories = ["--category", "multi_page", "--category", "single_page"]
+
+    main(["run", dataset, "--system", "fake", "--out", str(out), *categories])
+
+    assert len(json.loads(out.read_text())) == 2
+
+
+def test_a_category_without_questions_is_refused_before_any_service_is_used(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    built = _wire(monkeypatch, {})
+    dataset = str(_write(tmp_path / "questions.json", PAGES))
+
+    code = main(["run", dataset, "--system", "fake", "--out", str(tmp_path / "out.json"), "--category", "pdf_page"])
+
+    assert code == EXIT_BAD_INPUT
+    assert "No question has the category pdf_page." in capsys.readouterr().err
+    assert built == []
+
+
+class ResettableSystem(FakeSystem):
+    def __init__(self, usage: UsageCounter) -> None:
+        super().__init__(usage)
+        self.resets = 0
+
+    def reset(self) -> None:
+        self.resets += 1
+
+
+def _wire_resettable(monkeypatch: pytest.MonkeyPatch, **env: str) -> list[ResettableSystem]:
+    built: list[ResettableSystem] = []
+
+    def factory(settings: Settings, usage: UsageCounter) -> ResettableSystem:
+        system = ResettableSystem(usage)
+        built.append(system)
+        return system
+
+    _wire(monkeypatch, {"resettable": factory}, **env)
+    return built
+
+
+def test_a_fresh_run_empties_the_eval_tenant_before_the_first_question(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    built = _wire_resettable(monkeypatch, WEAVIATE_TENANT="eval")
+    dataset = str(_write(tmp_path / "questions.json", PAGES))
+
+    code = main(["run", dataset, "--system", "resettable", "--out", str(tmp_path / "out.json"), "--fresh"])
+
+    assert code == EXIT_OK
+    assert built[0].resets == 1
+    assert "Emptied the 'eval' tenant." in capsys.readouterr().out
+
+
+def test_a_run_without_fresh_leaves_the_tenant_alone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    built = _wire_resettable(monkeypatch, WEAVIATE_TENANT="eval")
+    dataset = str(_write(tmp_path / "questions.json", PAGES))
+
+    main(["run", dataset, "--system", "resettable", "--out", str(tmp_path / "out.json")])
+
+    assert built[0].resets == 0
+
+
+def test_fresh_is_refused_for_any_tenant_but_eval(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    built = _wire_resettable(monkeypatch, WEAVIATE_TENANT="development")
+    dataset = str(_write(tmp_path / "questions.json", PAGES))
+
+    code = main(["run", dataset, "--system", "resettable", "--out", str(tmp_path / "out.json"), "--fresh"])
+
+    assert code == EXIT_BAD_INPUT
+    error = capsys.readouterr().err
+    assert "needs WEAVIATE_TENANT=eval" in error
+    assert "'development'" in error
+    assert built == []  # nothing was built, so nothing could be deleted
+
+
+def test_fresh_cannot_be_combined_with_resume(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    built = _wire_resettable(monkeypatch, WEAVIATE_TENANT="eval")
+    dataset = str(_write(tmp_path / "questions.json", PAGES))
+    command = ["run", dataset, "--system", "resettable", "--out", str(tmp_path / "out.json")]
+
+    code = main([*command, "--fresh", "--resume"])
+
+    assert code == EXIT_BAD_INPUT
+    assert "cannot be combined with --resume" in capsys.readouterr().err
+    assert built == []
+
+
+def test_fresh_is_refused_for_a_system_that_cannot_empty_the_tenant(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    built = _wire(monkeypatch, {}, WEAVIATE_TENANT="eval")
+    dataset = str(_write(tmp_path / "questions.json", PAGES))
+
+    code = main(["run", dataset, "--system", "fake", "--out", str(tmp_path / "out.json"), "--fresh"])
+
+    assert code == EXIT_BAD_INPUT
+    assert "cannot empty the tenant" in capsys.readouterr().err
+    assert built[0].closed is True  # the system was built, and is closed again

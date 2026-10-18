@@ -13,7 +13,13 @@ from typing import TYPE_CHECKING
 
 from chat_with_any_website_agent.config import get_settings
 from chat_with_any_website_agent.errors import DatasetError
-from chat_with_any_website_agent.evaluation import evaluation_usage, load_cases, load_results, run_and_save
+from chat_with_any_website_agent.evaluation import (
+    Resettable,
+    evaluation_usage,
+    load_cases,
+    load_results,
+    run_and_save,
+)
 from chat_with_any_website_agent.evaluation_summary import format_summary, summarize
 from chat_with_any_website_agent.groq_client import GroqClient, patient_retrier
 from chat_with_any_website_agent.systems import SYSTEMS
@@ -27,6 +33,9 @@ EXIT_OK = 0
 EXIT_BAD_INPUT = 1
 EXIT_UNKNOWN_SYSTEM = 2
 EXIT_STOPPED = 3
+
+# The only tenant that a run may empty: the data of the other tenants is not the evaluation's to delete.
+EVAL_TENANT = "eval"
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -68,6 +77,18 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--resume", action="store_true", help="Continue the results already in the file")
     run.add_argument("--limit", type=int, help="Answer at most this many more questions, for a small first run")
     run.add_argument(
+        "--category",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="Answer only the questions of this category, for example multi_page; can be repeated",
+    )
+    run.add_argument(
+        "--fresh",
+        action="store_true",
+        help=f"Delete everything stored in the {EVAL_TENANT!r} tenant first, so that loading pages is part of the cost",
+    )
+    run.add_argument(
         "--retry-unscored",
         action="store_true",
         help="With --resume, ask again the questions that the judge could not score",
@@ -106,12 +127,30 @@ def _run(args: argparse.Namespace) -> int:
         _say(f"Unknown system {args.system!r}. Available: {', '.join(sorted(SYSTEMS)) or 'none yet'}.", error=True)
         return EXIT_UNKNOWN_SYSTEM
     cases = load_cases(args.dataset)
+    if args.category:
+        cases = [case for case in cases if case.category in args.category]
+        if not cases:
+            _say(f"No question has the category {', '.join(args.category)}.", error=True)
+            return EXIT_BAD_INPUT
     settings = get_settings()
+    if args.fresh and (args.resume or settings.weaviate_tenant != EVAL_TENANT):
+        _say(
+            f"--fresh empties the {EVAL_TENANT!r} tenant, so it needs WEAVIATE_TENANT={EVAL_TENANT} "
+            "(now " + repr(settings.weaviate_tenant) + ") and cannot be combined with --resume.",
+            error=True,
+        )
+        return EXIT_BAD_INPUT
     usage = evaluation_usage(settings)
     # The judge is patient: a run is allowed to wait for a limit to lift.
     judge = GroqClient.from_settings(settings, model=settings.eval_judge_model, usage=usage, retrier=patient_retrier())
     system = factory(settings, usage)
     try:
+        if args.fresh:
+            if not isinstance(system, Resettable):
+                _say(f"The system {args.system!r} cannot empty the tenant.", error=True)
+                return EXIT_BAD_INPUT
+            system.reset()
+            _say(f"Emptied the {EVAL_TENANT!r} tenant.")
         report = run_and_save(
             system,
             cases,

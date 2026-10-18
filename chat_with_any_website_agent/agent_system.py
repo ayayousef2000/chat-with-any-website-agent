@@ -77,6 +77,10 @@ class AgentSystem:
             draft=answer.draft,
         )
 
+    def reset(self) -> None:
+        """Delete everything stored in the tenant, so that the next run loads its pages from nothing."""
+        self._runtime.store.clear()
+
     def close(self) -> None:
         """Close the connections of the agent."""
         self._runtime.close()
@@ -93,3 +97,20 @@ def create_agent_system(settings: Settings, usage: UsageCounter) -> AgentSystem:
         The system. Its Groq calls wait for a limit to lift instead of giving up early.
     """
     return AgentSystem(build_runtime(settings, usage, retrier=patient_retrier(), check_followed=False))
+
+
+def create_single_page_agent_system(settings: Settings, usage: UsageCounter) -> AgentSystem:
+    """Build the agent for an evaluation run without the ability to follow links.
+
+    It grades, retries and checks its citations like the agent, but stays on the pages it is given. Compared with the
+    agent, it shows what following links adds.
+
+    Args:
+        settings: The settings. The Weaviate tenant to use is ``WEAVIATE_TENANT``, so set it to ``eval`` for a run.
+        usage: The counter that limits the run.
+
+    Returns:
+        The system. Its Groq calls wait for a limit to lift instead of giving up early.
+    """
+    runtime = build_runtime(settings, usage, retrier=patient_retrier(), follow_links=False, check_followed=False)
+    return AgentSystem(runtime)
