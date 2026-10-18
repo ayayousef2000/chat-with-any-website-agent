@@ -8,6 +8,9 @@ user name or password is refused, and the size and the total time of a download 
 
 A page that was downloaded before can be asked for again only if it changed, with the standard conditional request
 (``If-None-Match`` and ``If-Modified-Since``). The same checks apply to that request.
+
+A plain text file, such as the ``robots.txt`` of a site, is downloaded with the same checks, and its status is
+returned instead of being turned into an error.
 """
 
 import ipaddress
@@ -15,13 +18,16 @@ import logging
 import socket
 import time
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
 from chat_with_any_website_agent import __version__
 from chat_with_any_website_agent.errors import ExtractionError, FetchError, InvalidURLError
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +123,21 @@ class FetchedDocument:
     body: bytes
     url: str
     validators: Validators = field(default_factory=Validators)
+
+
+@dataclass(frozen=True)
+class FetchedText:
+    """A downloaded text file, with the status the website answered.
+
+    Attributes:
+        status: The HTTP status of the final response, after redirects. It is not turned into an error.
+        body: The text, cut at the size limit and read as UTF-8 with unreadable bytes replaced.
+        url: The address the text came from, after redirects and without a fragment.
+    """
+
+    status: int
+    body: str
+    url: str
 
 
 def normalize_url(url: str) -> str:
@@ -258,12 +279,63 @@ def fetch_if_changed(
     return _download(url, validators, timeout, max_bytes, pdf_max_bytes)
 
 
+def fetch_text(url: str, *, timeout: float = DEFAULT_TIMEOUT, max_bytes: int = DEFAULT_MAX_BYTES) -> FetchedText:
+    """Download a plain text file, such as ``robots.txt``, and say which status the website answered.
+
+    The request has the same checks as ``fetch_document``: every address, including each redirect, is looked up once,
+    must be public and is connected to as checked. Unlike a page, any status is a result, because what a missing or
+    refused file means is for the caller to decide. A file larger than the limit is cut, not refused.
+
+    Args:
+        url: The address to download.
+        timeout: The time limit of one step in seconds. The whole download may take twice as long.
+        max_bytes: The most bytes to read.
+
+    Returns:
+        The final status and the text.
+
+    Raises:
+        InvalidURLError: If an address is invalid, uses a disallowed port, has credentials or is not public.
+        FetchError: If the website cannot be reached, takes too long or redirects too often.
+    """
+
+    def read(response: httpx.Response, target: httpx.URL, deadline: float) -> FetchedText:
+        body = bytearray()
+        for part in response.iter_bytes():
+            body.extend(part)
+            if len(body) >= max_bytes:
+                break
+            _check_deadline(deadline)
+        text = bytes(body[:max_bytes]).decode("utf-8", errors="replace")
+        return FetchedText(status=response.status_code, body=text, url=str(target))
+
+    return _get(url, {"Accept": "text/plain,*/*;q=0.1"}, timeout, read)
+
+
 def _download(
     url: str, validators: Validators, timeout: float, max_bytes: int, pdf_max_bytes: int
 ) -> FetchedDocument | None:
     """Download a page or PDF file, or return ``None`` when a conditional request is answered with 'not modified'."""
     accept = "text/html,application/xhtml+xml" + (",application/pdf;q=0.9" if pdf_max_bytes > 0 else "")
     conditional = validators.request_headers()
+
+    def read(response: httpx.Response, target: httpx.URL, deadline: float) -> FetchedDocument | None:
+        if conditional and response.status_code == _NOT_MODIFIED:
+            return None
+        kind, body = _read_body(response, max_bytes, pdf_max_bytes, deadline)
+        return FetchedDocument(kind=kind, body=body, url=str(target), validators=_validators_of(response))
+
+    return _get(url, {"Accept": accept, **conditional}, timeout, read)
+
+
+def _get[T](
+    url: str, headers: dict[str, str], timeout: float, read: Callable[[httpx.Response, httpx.URL, float], T]
+) -> T:
+    """Send a GET request that is checked at every step, follow its redirects, and ``read`` the final response.
+
+    ``read`` is called once, with the response that is not a redirect, the address it came from and the deadline of
+    the whole request.
+    """
     deadline = time.monotonic() + timeout * TOTAL_TIME_FACTOR
     current = url
     try:
@@ -276,18 +348,14 @@ def _download(
             # settings are ignored because a proxy would do the connecting.
             with httpx.Client(
                 timeout=timeout,
-                headers={"User-Agent": USER_AGENT, "Accept": accept, **conditional},
+                headers={"User-Agent": USER_AGENT, **headers},
                 trust_env=False,
             ) as client:
                 response = _send_pinned(client, target, addresses, deadline)
                 try:
-                    if conditional and response.status_code == _NOT_MODIFIED:
-                        return None
                     redirect = _redirect_target(response, target)
                     if redirect is None:
-                        kind, body = _read_body(response, max_bytes, pdf_max_bytes, deadline)
-                        validators_found = _validators_of(response)
-                        return FetchedDocument(kind=kind, body=body, url=str(target), validators=validators_found)
+                        return read(response, target, deadline)
                 finally:
                     response.close()
             current = str(redirect)

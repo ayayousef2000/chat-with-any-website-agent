@@ -13,6 +13,7 @@ from chat_with_any_website_agent.fetching import (
     Validators,
     fetch_document,
     fetch_if_changed,
+    fetch_text,
     normalize_url,
     resolve_public_addresses,
 )
@@ -646,3 +647,83 @@ def test_a_connection_failure_hides_the_library_error(monkeypatch: pytest.Monkey
 
     assert str(caught.value) == fetching.UNREACHABLE_MESSAGE
     assert "Errno" not in str(caught.value)
+
+
+# --- a plain text file ---
+
+
+RULES = "User-agent: *\nDisallow: /private\n"
+
+
+def _text(content: bytes = RULES.encode(), status: int = 200) -> httpx.Response:
+    return httpx.Response(status, headers={"content-type": "text/plain"}, content=content)
+
+
+def test_a_text_file_is_returned_with_its_status_and_address(monkeypatch: pytest.MonkeyPatch) -> None:
+    _serve(monkeypatch, lambda request: _text())
+
+    fetched = fetch_text("https://example.com/robots.txt", timeout=5, max_bytes=1000)
+
+    assert (fetched.status, fetched.body, fetched.url) == (200, RULES, "https://example.com/robots.txt")
+
+
+@pytest.mark.parametrize("status", [401, 403, 404, 410, 429, 500, 503])
+def test_the_status_of_a_text_file_is_a_result_and_not_an_error(monkeypatch: pytest.MonkeyPatch, status: int) -> None:
+    _serve(monkeypatch, lambda request: _text(b"gone", status))
+
+    assert fetch_text("https://example.com/robots.txt", timeout=5, max_bytes=1000).status == status
+
+
+def test_a_text_file_larger_than_the_limit_is_cut_and_not_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    _serve(monkeypatch, lambda request: _text(b"a" * 5000))
+
+    assert fetch_text("https://example.com/robots.txt", timeout=5, max_bytes=100).body == "a" * 100
+
+
+def test_bytes_that_are_not_text_are_replaced_in_a_text_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    broken = b"ok " + bytes([0xFF, 0xFE]) + b" ok"  # not valid UTF-8
+    _serve(monkeypatch, lambda request: _text(broken))
+
+    body = fetch_text("https://example.com/robots.txt", timeout=5, max_bytes=1000).body
+
+    assert body == "ok " + chr(0xFFFD) * 2 + " ok"
+
+
+def test_a_text_file_is_asked_for_as_plain_text_and_followed_through_redirects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _answers(monkeypatch, {"old.example": [PUBLIC], "new.example": ["93.184.216.35"]})
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.headers["host"] == "old.example":
+            return httpx.Response(301, headers={"location": "https://new.example/robots.txt"})
+        return _text()
+
+    received = _network(monkeypatch, handler)
+
+    fetched = fetch_text("https://old.example/robots.txt", timeout=5, max_bytes=1000)
+
+    assert fetched.url == "https://new.example/robots.txt"
+    assert received[0].headers["accept"].startswith("text/plain")
+    assert received[0].headers["user-agent"] == fetching.USER_AGENT
+
+
+def test_a_text_file_gets_the_same_checks_as_a_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    _answers(monkeypatch, {"start.example": [PUBLIC], "inside.example": ["10.0.0.1"]})
+    received = _network(monkeypatch, _redirect_to("https://inside.example/robots.txt"))
+
+    with pytest.raises(InvalidURLError) as caught:
+        fetch_text("https://start.example/robots.txt", timeout=5, max_bytes=1000)
+
+    assert str(caught.value) == fetching.PRIVATE_ADDRESS_MESSAGE
+    assert [request.headers["host"] for request in received] == ["start.example"]
+
+
+def test_a_text_file_that_redirects_without_end_is_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    _answers(monkeypatch, {"loop.example": [PUBLIC]})
+    _network(monkeypatch, _redirect_to("/again"))
+
+    with pytest.raises(FetchError) as caught:
+        fetch_text("https://loop.example/robots.txt", timeout=5, max_bytes=1000)
+
+    assert str(caught.value) == fetching.TOO_MANY_REDIRECTS_MESSAGE
