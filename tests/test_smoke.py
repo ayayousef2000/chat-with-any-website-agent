@@ -70,12 +70,31 @@ class FakeTenants:
 
 
 class FakeCollection:
-    def __init__(self, *, multi_tenant: bool = True, tenants: list[str] | None = None, chunks: int = 0) -> None:
+    """A collection that has the field for the age of a source, as a new one does, unless told otherwise."""
+
+    def __init__(
+        self,
+        *,
+        multi_tenant: bool = True,
+        tenants: list[str] | None = None,
+        chunks: int = 0,
+        properties: list[str] | None = None,
+    ) -> None:
+        self.properties = ["url", "loaded_at"] if properties is None else list(properties)
+        self.added: list[Any] = []
         self.config = SimpleNamespace(
-            get=lambda: SimpleNamespace(multi_tenancy_config=SimpleNamespace(enabled=multi_tenant))
+            get=lambda: SimpleNamespace(
+                multi_tenancy_config=SimpleNamespace(enabled=multi_tenant),
+                properties=[SimpleNamespace(name=name) for name in self.properties],
+            ),
+            add_property=self._add_property,
         )
         self.tenants = FakeTenants(tenants or [])
         self.chunks = chunks
+
+    def _add_property(self, prop: Any) -> None:
+        self.added.append(prop)
+        self.properties.append(prop.name)
 
     def with_tenant(self, tenant: str) -> Any:
         count = self.chunks
@@ -168,6 +187,42 @@ def test_an_existing_collection_is_read_with_its_tenants_and_chunks() -> None:
         "WebsiteChunk is multi-tenant; tenants: demo, development; 7 chunk(s) in development"
     )
     assert collection.tenants.created == []  # nothing was written
+
+
+def test_a_collection_with_the_age_field_is_reported_as_keeping_when_a_source_was_loaded() -> None:
+    collection = FakeCollection(tenants=["development"])
+    client = FakeClient(FakeCollections({"WebsiteChunk": collection}))
+
+    checks = check_weaviate(client, "WebsiteChunk", "development", prepare=True)
+
+    assert _by_name(checks)["source age"].detail == "the field loaded_at keeps when a source was loaded"
+    assert collection.added == []  # it was there already
+
+
+def test_prepare_adds_the_age_field_to_a_collection_that_was_made_without_it() -> None:
+    collection = FakeCollection(tenants=["development", "eval", "demo"], properties=["url", "text"])
+    client = FakeClient(FakeCollections({"WebsiteChunk": collection}))
+
+    checks = check_weaviate(client, "WebsiteChunk", "development", prepare=True)
+
+    [added] = collection.added
+    assert added.name == "loaded_at"
+    assert _by_name(checks)["source age"].detail == (
+        "the field loaded_at keeps when a source was loaded; it was added now"
+    )
+    assert all(check.ok for check in checks)
+
+
+def test_without_prepare_a_missing_age_field_is_reported_and_nothing_is_added() -> None:
+    collection = FakeCollection(tenants=["development"], properties=["url", "text"])
+    client = FakeClient(FakeCollections({"WebsiteChunk": collection}))
+
+    checks = check_weaviate(client, "WebsiteChunk", "development", prepare=False)
+
+    assert "loaded_at is missing" in _by_name(checks)["source age"].detail
+    assert "run with --prepare" in _by_name(checks)["source age"].detail
+    assert _by_name(checks)["source age"].ok  # an older collection still works, only ages are not known
+    assert collection.added == []
 
 
 def test_chunks_are_not_counted_in_a_tenant_that_does_not_exist_yet() -> None:
@@ -348,6 +403,7 @@ def test_the_plan_says_what_prepare_would_create_and_leaves_out_unchosen_service
     plan = describe_plan(_settings(monkeypatch), ("weaviate",), prepare=True)
 
     assert "create WebsiteChunk and the tenants development, eval, demo" in plan
+    assert "add the field loaded_at (when a source was loaded) if the collection lacks it" in plan
     assert "Cohere" not in plan
     assert "Groq" not in plan
 
@@ -402,6 +458,7 @@ def test_the_checks_are_built_from_the_settings_and_every_groq_call_is_counted(
     assert [(check.service, check.name) for check in checks] == [
         ("weaviate", "connection"),
         ("weaviate", "collection"),
+        ("weaviate", "source age"),
         ("cohere", "embedding"),
         ("cohere", "reranking"),
         ("groq", "key 1"),

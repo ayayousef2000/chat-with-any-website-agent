@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     pdf_max_pages: int = Field(default=100, gt=0)
     pdf_max_seconds: float = Field(default=30.0, gt=0)  # reading stops after this long, which matters on a slow host
 
+    # A stored copy of a source older than this is loaded again. 0 never loads a copy again because of its age.
+    source_max_age_hours: int = Field(default=0, ge=0)
+
     # Limits for one question
     agent_max_steps: int = Field(default=12, gt=0)  # the most graph nodes run for one question
     agent_max_link_hops: int = Field(default=3, ge=0)

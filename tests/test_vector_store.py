@@ -1,5 +1,7 @@
 """Tests of the Weaviate store with fake Weaviate objects: no cluster is contacted."""
 
+import logging
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
@@ -7,18 +9,22 @@ import httpx
 import pytest
 import weaviate
 from pydantic import SecretStr
+from weaviate.classes.config import DataType
 from weaviate.classes.query import Filter, HybridFusion
 from weaviate.exceptions import UnexpectedStatusCodeError, WeaviateConnectionError
 
 from chat_with_any_website_agent.errors import ServiceBusyError, StoreError
 from chat_with_any_website_agent.retrying import Retrier
 from chat_with_any_website_agent.vector_store import (
+    AGE_PROPERTY,
     INSERT_BATCH_SIZE,
     NOT_MULTI_TENANT_MESSAGE,
     WEAVIATE_RETRYABLE,
     StoredChunk,
     WeaviateStore,
+    ensure_age_property,
     open_tenant,
+    property_names,
 )
 
 if TYPE_CHECKING:
@@ -52,12 +58,24 @@ class FakeTenants:
 
 
 class FakeCollection:
-    def __init__(self, *, multi_tenant: bool = True, tenants: set[str] | None = None) -> None:
+    def __init__(
+        self, *, multi_tenant: bool = True, tenants: set[str] | None = None, properties: list[str] | None = None
+    ) -> None:
+        self.properties = list(properties or [])
+        self.added: list[Any] = []
         self.config = SimpleNamespace(
-            get=lambda: SimpleNamespace(multi_tenancy_config=SimpleNamespace(enabled=multi_tenant))
+            get=lambda: SimpleNamespace(
+                multi_tenancy_config=SimpleNamespace(enabled=multi_tenant),
+                properties=[SimpleNamespace(name=name) for name in self.properties],
+            ),
+            add_property=self._add_property,
         )
         self.tenants = FakeTenants(set(tenants or ()))
         self.used_tenant: str | None = None
+
+    def _add_property(self, prop: Any) -> None:
+        self.added.append(prop)
+        self.properties.append(prop.name)
 
     def with_tenant(self, tenant: str) -> str:
         self.used_tenant = tenant
@@ -106,7 +124,15 @@ def test_a_new_collection_is_created_with_multi_tenancy_and_the_tenant_is_made()
     created = collections.created[0]
     assert created["name"] == "Chunks"
     assert created["multi_tenancy_config"].enabled is True
-    assert [prop.name for prop in created["properties"]] == ["url", "title", "heading", "chunk_index", "text"]
+    assert [prop.name for prop in created["properties"]] == [
+        "url",
+        "title",
+        "heading",
+        "chunk_index",
+        "text",
+        "loaded_at",  # when the source was loaded, so that an old copy can be loaded again
+    ]
+    assert created["properties"][-1].dataType == DataType.DATE
     assert collections.new_collection.tenants.created == ["development"]
     assert opened == "collection-for-development"  # every read and write goes through the tenant
 
@@ -219,6 +245,30 @@ def test_connecting_opens_the_tenant_and_gives_the_client_the_startup_time(monke
     assert client.closed is True
 
 
+def _connect_to(monkeypatch: pytest.MonkeyPatch, collections: FakeCollections) -> WeaviateStore:
+    monkeypatch.setattr(weaviate, "connect_to_weaviate_cloud", lambda **_: FakeClient(collections))
+    return WeaviateStore.connect("https://cluster.example", SecretStr("secret"), "Chunks", "development")
+
+
+def test_a_store_over_a_collection_with_the_age_field_keeps_ages(monkeypatch: pytest.MonkeyPatch) -> None:
+    collections = FakeCollections({"Chunks": FakeCollection(properties=["url", AGE_PROPERTY])})
+
+    assert _connect_to(monkeypatch, collections).keeps_loaded_at is True
+
+
+def test_a_store_over_a_collection_without_the_age_field_does_not_keep_ages_and_says_how_to_add_it(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    collections = FakeCollections({"Chunks": FakeCollection(properties=["url", "text"])})
+
+    with caplog.at_level(logging.WARNING, logger="chat_with_any_website_agent.vector_store"):
+        store = _connect_to(monkeypatch, collections)
+
+    assert store.keeps_loaded_at is False
+    assert "Run 'agent-smoke --prepare' once to add it." in caplog.text
+    assert collections.existing["Chunks"].added == []  # connecting never changes the collection
+
+
 def test_a_failed_start_closes_the_connection(monkeypatch: pytest.MonkeyPatch) -> None:
     client = FakeClient(FakeCollections({"Chunks": FakeCollection(multi_tenant=False)}))
     monkeypatch.setattr(weaviate, "connect_to_weaviate_cloud", lambda **_: client)
@@ -284,12 +334,15 @@ class FakeTenantCollection:
         self.aggregate = FakeAggregate()
 
 
-def _store(client: FakeClient | None = None) -> tuple[WeaviateStore, FakeTenantCollection, list[float]]:
+def _store(
+    client: FakeClient | None = None, *, keeps_loaded_at: bool = False
+) -> tuple[WeaviateStore, FakeTenantCollection, list[float]]:
     pauses: list[float] = []
     retrier = Retrier(WEAVIATE_RETRYABLE, sleep=pauses.append, jitter=lambda _: 0.0)
     collection = FakeTenantCollection()
     fake: Any = collection
-    return WeaviateStore(fake, client=client, retrier=retrier), collection, pauses
+    store = WeaviateStore(fake, client=client, retrier=retrier, keeps_loaded_at=keeps_loaded_at)
+    return store, collection, pauses
 
 
 def _found(url: str = "https://a.example/", heading: str | None = "Intro", score: float | None = 0.7) -> Any:
@@ -359,6 +412,101 @@ def test_the_whole_tenant_can_be_cleared() -> None:
     store.clear()
 
     assert collection.data.deleted == [Filter.by_property("chunk_index").greater_or_equal(0)]
+
+
+# --- when a source was loaded ---
+
+LOADED = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+SOURCE = "https://a.example/"
+
+
+def test_a_source_is_stored_with_the_time_it_was_loaded_when_the_collection_keeps_ages() -> None:
+    store, collection, _ = _store(keeps_loaded_at=True)
+    chunks = [StoredChunk("a", "", [0.0]), StoredChunk("b", "", [0.0])]
+
+    store.replace_source(SOURCE, "Page A", chunks, loaded_at=LOADED)
+
+    [inserted] = collection.data.inserted
+    assert [item.properties[AGE_PROPERTY] for item in inserted] == [LOADED, LOADED]
+
+
+def test_the_time_is_now_when_none_is_given() -> None:
+    store, collection, _ = _store(keeps_loaded_at=True)
+    before = datetime.now(UTC)
+
+    store.replace_source(SOURCE, "Page A", [StoredChunk("a", "", [0.0])])
+
+    stored = collection.data.inserted[0][0].properties[AGE_PROPERTY]
+    assert before <= stored <= datetime.now(UTC)
+
+
+def test_nothing_is_written_to_the_age_field_when_the_collection_lacks_it() -> None:
+    store, collection, _ = _store()  # the collection was made before the field existed
+
+    store.replace_source(SOURCE, "Page A", [StoredChunk("a", "", [0.0])], loaded_at=LOADED)
+
+    assert AGE_PROPERTY not in collection.data.inserted[0][0].properties
+
+
+def test_the_time_a_source_was_loaded_is_read_from_one_of_its_chunks() -> None:
+    store, collection, _ = _store(keeps_loaded_at=True)
+    collection.query.objects = [SimpleNamespace(properties={AGE_PROPERTY: LOADED})]
+
+    assert store.loaded_at(SOURCE) == LOADED
+    assert collection.query.fetch_calls == [
+        {"filters": Filter.by_property("url").equal(SOURCE), "limit": 1, "return_properties": [AGE_PROPERTY]}
+    ]
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (LOADED, LOADED),
+        ("2026-10-01T12:00:00Z", LOADED),
+        ("2026-10-01T12:00:00+00:00", LOADED),
+        (LOADED.replace(tzinfo=None), LOADED),  # a time without a time zone is taken as UTC
+        (None, None),  # the chunks were stored before the field existed
+        ("not a date", None),
+        (12345, None),
+    ],
+)
+def test_a_time_is_read_whatever_form_weaviate_returns_it_in(value: object, expected: datetime | None) -> None:
+    store, collection, _ = _store(keeps_loaded_at=True)
+    collection.query.objects = [SimpleNamespace(properties={AGE_PROPERTY: value})]
+
+    assert store.loaded_at(SOURCE) == expected
+
+
+def test_the_time_of_a_source_that_is_not_stored_is_not_known() -> None:
+    store, _, _ = _store(keeps_loaded_at=True)
+
+    assert store.loaded_at(SOURCE) is None
+
+
+def test_weaviate_is_not_asked_for_a_time_that_the_collection_does_not_keep() -> None:
+    store, collection, _ = _store()
+    collection.query.objects = [SimpleNamespace(properties={AGE_PROPERTY: LOADED})]
+
+    assert store.loaded_at(SOURCE) is None
+    assert collection.query.fetch_calls == []
+
+
+def test_the_age_field_is_added_to_a_collection_that_lacks_it() -> None:
+    collection = FakeCollection(properties=["url", "text"])
+
+    assert ensure_age_property(collection) is True
+
+    [added] = collection.added
+    assert added.name == AGE_PROPERTY
+    assert added.dataType == DataType.DATE
+    assert property_names(collection) == {"url", "text", AGE_PROPERTY}
+
+
+def test_nothing_is_added_when_the_collection_has_the_age_field_already() -> None:
+    collection = FakeCollection(properties=["url", AGE_PROPERTY])
+
+    assert ensure_age_property(collection) is False
+    assert collection.added == []
 
 
 # --- looking things up ---

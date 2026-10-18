@@ -24,7 +24,13 @@ from chat_with_any_website_agent.groq_client import GROQ_RETRYABLE, GroqClient
 from chat_with_any_website_agent.reranking import CohereReranker
 from chat_with_any_website_agent.retrying import Retrier, RetryPolicy
 from chat_with_any_website_agent.usage import UsageCounter
-from chat_with_any_website_agent.vector_store import WeaviateStore, open_tenant
+from chat_with_any_website_agent.vector_store import (
+    AGE_PROPERTY,
+    WeaviateStore,
+    ensure_age_property,
+    open_tenant,
+    property_names,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -86,9 +92,11 @@ def check_weaviate(client: Any, collection_name: str, tenant: str, *, prepare: b
         return [Check("weaviate", "connection", False, "the cluster is not ready; it may be waking up, try again soon")]
     checks = [Check("weaviate", "connection", True, "the cluster is ready")]
     try:
+        added = False
         if prepare:
             for environment in ENVIRONMENTS:
                 open_tenant(client, collection_name, environment)
+            added = ensure_age_property(client.collections.use(collection_name))
         if not client.collections.exists(collection_name):
             detail = f"{collection_name} does not exist yet; run with --prepare to create it"
             return [*checks, Check("weaviate", "collection", True, detail)]
@@ -101,9 +109,19 @@ def check_weaviate(client: Any, collection_name: str, tenant: str, *, prepare: b
             count = WeaviateStore(collection.with_tenant(tenant)).count_chunks()
             detail += f"; {count} chunk(s) in {tenant}"
         checks.append(Check("weaviate", "collection", True, detail))
+        checks.append(_age_check(collection, added=added))
     except Exception as error:
         checks.append(Check("weaviate", "collection", False, _describe(error)))
     return checks
+
+
+def _age_check(collection: Any, *, added: bool) -> Check:
+    """Say whether the collection keeps when each source was loaded, which lets an old copy be loaded again."""
+    if AGE_PROPERTY in property_names(collection):
+        detail = f"the field {AGE_PROPERTY} keeps when a source was loaded" + ("; it was added now" if added else "")
+        return Check("weaviate", "source age", True, detail)
+    detail = f"the field {AGE_PROPERTY} is missing, so the age of stored sources is not known; run with --prepare"
+    return Check("weaviate", "source age", True, detail)
 
 
 def check_cohere(embedder: Any, reranker: Any, dimension: int) -> list[Check]:
@@ -275,7 +293,8 @@ def describe_plan(settings: Settings, services: Sequence[str], *, prepare: bool)
     lines = ["This check would make these calls, and write nothing unless --prepare is given:"]
     if "weaviate" in services:
         action = (
-            f"create {settings.weaviate_collection} and the tenants {', '.join(ENVIRONMENTS)} if missing"
+            f"create {settings.weaviate_collection} and the tenants {', '.join(ENVIRONMENTS)} if missing, "
+            f"and add the field {AGE_PROPERTY} (when a source was loaded) if the collection lacks it"
             if prepare
             else f"read {settings.weaviate_collection} and its tenants (nothing is written)"
         )
@@ -297,7 +316,11 @@ def describe_plan(settings: Settings, services: Sequence[str], *, prepare: bool)
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agent-smoke", description=__doc__)
     parser.add_argument("--only", nargs="+", choices=SERVICES, default=list(SERVICES), help="Check only these")
-    parser.add_argument("--prepare", action="store_true", help="Create the Weaviate collection and the tenants")
+    parser.add_argument(
+        "--prepare",
+        action="store_true",
+        help="Create the Weaviate collection and the tenants, and add the field that keeps when a source was loaded",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Show what would be done and call nothing")
     return parser
 

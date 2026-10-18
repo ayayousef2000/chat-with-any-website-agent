@@ -1,5 +1,6 @@
 """Tests of the ``agent-ask`` command, with fakes instead of the agent and the services."""
 
+from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -121,6 +122,38 @@ def test_the_answer_comes_with_its_sources_and_the_steps_of_the_agent() -> None:
             "",
             "Cohere calls: 1. Groq calls: 2. Groq tokens: 1234. Time: 3.5 s.",
         ]
+    )
+
+
+@pytest.mark.parametrize(
+    ("age", "said"),
+    [
+        (timedelta(seconds=20), "loaded less than a minute ago"),
+        (timedelta(minutes=1), "loaded 1 minute ago"),
+        (timedelta(minutes=59, seconds=59), "loaded 59 minutes ago"),
+        (timedelta(hours=1), "loaded 1 hour ago"),
+        (timedelta(hours=23), "loaded 23 hours ago"),
+        (timedelta(days=1, hours=5), "loaded 1 day ago"),
+        (timedelta(days=3), "loaded 3 days ago"),
+        (timedelta(seconds=-5), "loaded less than a minute ago"),  # a clock that is a little behind
+    ],
+)
+def test_the_age_of_a_reused_copy_is_said_in_the_largest_whole_unit(age: timedelta, said: str) -> None:
+    ingested = IngestResult(url=NORMALIZED, reused=True, age=age)
+
+    text = format_answer(ingested, ANSWERED, UsageCounter(), 1.0)
+
+    assert text.startswith(f"Reused the stored copy of the source ({said}).")
+
+
+def test_a_copy_that_was_too_old_is_said_to_have_been_loaded_again() -> None:
+    ingested = IngestResult(url=NORMALIZED, reused=False, chunk_count=4, expired=True)
+
+    text = format_answer(ingested, ANSWERED, UsageCounter(), 1.0)
+
+    assert text.startswith(
+        "Loaded the source (4 chunk(s) stored). "
+        "The stored copy was too old, or its age was not known, so it was loaded again."
     )
 
 

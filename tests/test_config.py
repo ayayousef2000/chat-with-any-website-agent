@@ -47,6 +47,14 @@ def test_default_fetch_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.pdf_max_bytes == 10_000_000
     assert settings.pdf_max_pages == 100
     assert settings.pdf_max_seconds == 30.0
+    assert settings.source_max_age_hours == 0  # no copy is loaded again because of its age unless asked for
+
+
+def test_the_age_limit_of_stored_sources_can_be_set_and_zero_means_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert _settings(monkeypatch, SOURCE_MAX_AGE_HOURS="0").source_max_age_hours == 0
+    assert _settings(monkeypatch, SOURCE_MAX_AGE_HOURS="24").source_max_age_hours == 24
+    with pytest.raises(ValidationError):
+        _settings(monkeypatch, SOURCE_MAX_AGE_HOURS="-1")
 
 
 def test_pdf_support_can_be_switched_off_with_zero(monkeypatch: pytest.MonkeyPatch) -> None:

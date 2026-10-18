@@ -5,7 +5,9 @@ Everything is kept in one multi-tenant collection with one tenant for each envir
 another, even though a free Weaviate Cloud plan allows only one collection.
 """
 
+import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Self
 
 import weaviate
@@ -36,6 +38,11 @@ NOT_MULTI_TENANT_MESSAGE = (
 WEAVIATE_RETRYABLE: tuple[type[BaseException], ...] = (WeaviateConnectionError, WeaviateTimeoutError)
 
 INSERT_BATCH_SIZE = 100
+
+# The field of every chunk that says when its source was loaded, so that an old copy can be loaded again.
+AGE_PROPERTY = "loaded_at"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -118,6 +125,7 @@ def _get_or_create_collection(client: Any, name: str) -> Collection[Any, Any]:
                 Property(name="heading", data_type=DataType.TEXT),
                 Property(name="chunk_index", data_type=DataType.INT),
                 Property(name="text", data_type=DataType.TEXT),
+                Property(name=AGE_PROPERTY, data_type=DataType.DATE),
             ],
             # Vectors are computed by the application (Cohere), not by Weaviate.
             vector_config=Configure.Vectors.self_provided(),
@@ -131,6 +139,41 @@ def _get_or_create_collection(client: Any, name: str) -> Collection[Any, Any]:
     return created
 
 
+def property_names(collection: Any) -> set[str]:
+    """The names of the properties of a collection."""
+    return {prop.name for prop in collection.config.get().properties}
+
+
+def ensure_age_property(collection: Any) -> bool:
+    """Add the field that says when a source was loaded, if the collection does not have it yet.
+
+    The change only adds a field. No chunk is changed or deleted, and no embedding is made. The chunks that were
+    stored before have no value in the field, so their age is not known.
+
+    Args:
+        collection: The collection, not bound to a tenant.
+
+    Returns:
+        ``True`` if the field was added, ``False`` if the collection had it already.
+    """
+    if AGE_PROPERTY in property_names(collection):
+        return False
+    collection.config.add_property(Property(name=AGE_PROPERTY, data_type=DataType.DATE))
+    return True
+
+
+def _as_datetime(value: Any) -> datetime | None:
+    """Read the date that Weaviate returns, which is a ``datetime`` or a text, as a time with its time zone."""
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
 def _url_filter(url: str) -> Any:
     return Filter.by_property("url").equal(url)
 
@@ -138,17 +181,32 @@ def _url_filter(url: str) -> Any:
 class WeaviateStore:
     """Stores chunk vectors in the tenant of one environment and searches them."""
 
-    def __init__(self, collection: Collection[Any, Any], *, client: Any = None, retrier: Retrier | None = None) -> None:
+    def __init__(
+        self,
+        collection: Collection[Any, Any],
+        *,
+        client: Any = None,
+        retrier: Retrier | None = None,
+        keeps_loaded_at: bool = False,
+    ) -> None:
         """Create a store over a collection that is already bound to a tenant.
 
         Args:
             collection: The collection for the tenant, as ``open_tenant`` returns it.
             client: The connected client, closed by ``close``. Not needed when something else closes it.
             retrier: How to try again after a failed connection. The default suits a person who is waiting.
+            keeps_loaded_at: Whether the collection has the field that says when a source was loaded. When it does
+                not, nothing is written to that field and the age of a source is not known.
         """
         self._collection = collection
         self._client = client
         self._retrier = retrier or Retrier(retryable=WEAVIATE_RETRYABLE)
+        self._keeps_loaded_at = keeps_loaded_at
+
+    @property
+    def keeps_loaded_at(self) -> bool:
+        """Whether the collection keeps when each source was loaded."""
+        return self._keeps_loaded_at
 
     @classmethod
     def connect(
@@ -185,10 +243,18 @@ class WeaviateStore:
         )
         try:
             collection = open_tenant(client, collection_name, tenant)
+            keeps_loaded_at = AGE_PROPERTY in property_names(client.collections.use(collection_name))
         except Exception:
             client.close()  # a failed start must not leave the connection open
             raise
-        return cls(collection, client=client, retrier=retrier)
+        if not keeps_loaded_at:
+            logger.warning(
+                "The collection %s has no field %s, so the age of the stored sources is not known. "
+                "Run 'agent-smoke --prepare' once to add it.",
+                collection_name,
+                AGE_PROPERTY,
+            )
+        return cls(collection, client=client, retrier=retrier, keeps_loaded_at=keeps_loaded_at)
 
     def __enter__(self) -> Self:
         return self
@@ -198,18 +264,23 @@ class WeaviateStore:
     ) -> None:
         self.close()
 
-    def replace_source(self, url: str, title: str, chunks: Sequence[StoredChunk]) -> None:
+    def replace_source(
+        self, url: str, title: str, chunks: Sequence[StoredChunk], loaded_at: datetime | None = None
+    ) -> None:
         """Remove any chunks previously stored for a source and store the new ones.
 
         Args:
             url: The address of the source.
             title: The title of the source.
             chunks: The chunks with their embeddings, in reading order.
+            loaded_at: When the source was loaded, now when it is not given. It is only kept when the collection has
+                the field for it.
 
         Raises:
             StoreError: If Weaviate refuses to store some of the chunks.
             ServiceBusyError: If Weaviate cannot be reached after the retries.
         """
+        age: dict[str, Any] = {AGE_PROPERTY: loaded_at or datetime.now(UTC)} if self._keeps_loaded_at else {}
         objects = [
             DataObject(
                 properties={
@@ -218,6 +289,7 @@ class WeaviateStore:
                     "heading": chunk.heading,
                     "chunk_index": index,
                     "text": chunk.text,
+                    **age,
                 },
                 vector=list(chunk.vector),
             )
@@ -277,6 +349,28 @@ class WeaviateStore:
             name="Weaviate",
         )
         return bool(response.objects)
+
+    def loaded_at(self, url: str) -> datetime | None:
+        """Find out when a source was loaded.
+
+        Args:
+            url: The address of the source.
+
+        Returns:
+            The time the stored copy was made, or ``None`` when it is not known: the collection has no field for it,
+            the source is not stored, or its chunks were stored before the field existed.
+        """
+        if not self._keeps_loaded_at:
+            return None
+        response = self._retrier.call(
+            lambda: self._collection.query.fetch_objects(
+                filters=_url_filter(url), limit=1, return_properties=[AGE_PROPERTY]
+            ),
+            name="Weaviate",
+        )
+        if not response.objects:
+            return None
+        return _as_datetime(response.objects[0].properties.get(AGE_PROPERTY))
 
     def search(
         self,

@@ -1,6 +1,7 @@
 """Tests of the ingestion of a source, with fakes instead of the network, Cohere and Weaviate."""
 
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -28,14 +29,25 @@ in a pipeline that answers questions from web pages.</p></article></body></html>
 
 
 class FakeStore:
-    """Remembers which sources are stored and what was stored for them."""
+    """Remembers which sources are stored, when they were loaded and what was stored for them."""
 
-    def __init__(self, stored: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        stored: set[str] | None = None,
+        *,
+        keeps_loaded_at: bool = False,
+        loaded: dict[str, datetime] | None = None,
+    ) -> None:
         self.stored = stored or set()
+        self.keeps_loaded_at = keeps_loaded_at
+        self.loaded = loaded or {}
         self.replaced: list[tuple[str, str, list[StoredChunk]]] = []
 
     def has_source(self, url: str) -> bool:
         return url in self.stored
+
+    def loaded_at(self, url: str) -> datetime | None:
+        return self.loaded.get(url)
 
     def replace_source(self, url: str, title: str, chunks: Sequence[StoredChunk]) -> None:
         self.replaced.append((url, title, list(chunks)))
@@ -74,7 +86,7 @@ def _ingestor(
     store: FakeStore,
     embedder: FakeEmbedder,
     fetch: FakeFetch,
-    **options: int,
+    **options: Any,
 ) -> SourceIngestor:
     return SourceIngestor(store, embedder, fetch, pdf_max_pages=100, pdf_max_seconds=30.0, **options)
 
@@ -146,6 +158,115 @@ def test_a_refresh_downloads_a_stored_source_again() -> None:
     assert result.reused is False
     assert fetch.urls == [URL]
     assert len(store.replaced) == 1
+
+
+# --- how old a stored source may be ---
+
+NOW = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
+WEEK = timedelta(days=7)
+
+
+def _aged(
+    age: timedelta | None, *, keeps_loaded_at: bool = True, max_age: timedelta | None = WEEK
+) -> tuple[SourceIngestor, FakeStore, FakeFetch]:
+    """An ingestor over a store that holds the source, loaded ``age`` ago (or at an unknown time)."""
+    loaded = {} if age is None else {URL: NOW - age}
+    store, fetch = FakeStore({URL}, keeps_loaded_at=keeps_loaded_at, loaded=loaded), FakeFetch()
+    return _ingestor(store, FakeEmbedder(), fetch, max_age=max_age, now=lambda: NOW), store, fetch
+
+
+def test_a_stored_source_that_is_younger_than_the_limit_is_reused_and_its_age_is_reported() -> None:
+    ingestor, store, fetch = _aged(timedelta(days=1))
+
+    result = ingestor.ingest(URL)
+
+    assert result == IngestResult(url=URL, reused=True, age=timedelta(days=1))
+    assert fetch.urls == []
+    assert store.replaced == []
+
+
+def test_a_stored_source_exactly_as_old_as_the_limit_is_still_reused() -> None:
+    ingestor, _, fetch = _aged(WEEK)
+
+    assert ingestor.ingest(URL).reused is True
+    assert fetch.urls == []
+
+
+def test_a_stored_source_older_than_the_limit_is_loaded_again() -> None:
+    ingestor, store, fetch = _aged(timedelta(days=8))
+
+    result = ingestor.ingest(URL)
+
+    assert result == IngestResult(url=URL, reused=False, title="Sample Article", chunk_count=1, expired=True)
+    assert fetch.urls == [URL]
+    assert len(store.replaced) == 1
+
+
+def test_a_stored_source_of_an_unknown_age_is_loaded_again_once() -> None:
+    ingestor, store, fetch = _aged(None)  # its chunks were stored before the store kept ages
+
+    result = ingestor.ingest(URL)
+
+    assert result.expired is True
+    assert fetch.urls == [URL]
+    assert len(store.replaced) == 1
+
+
+def test_a_stored_source_is_kept_whatever_its_age_when_there_is_no_limit() -> None:
+    ingestor, _, fetch = _aged(timedelta(days=100), max_age=None)
+
+    result = ingestor.ingest(URL)
+
+    assert result == IngestResult(url=URL, reused=True, age=timedelta(days=100))
+    assert fetch.urls == []
+
+
+def test_the_limit_has_no_effect_when_the_store_cannot_tell_how_old_a_source_is() -> None:
+    ingestor, store, fetch = _aged(None, keeps_loaded_at=False)  # a collection without the field
+
+    result = ingestor.ingest(URL)
+
+    assert result == IngestResult(url=URL, reused=True)  # kept, and not loaded again on every question
+    assert fetch.urls == []
+    assert store.replaced == []
+
+
+def test_a_refresh_loads_a_young_source_again_without_calling_it_expired() -> None:
+    ingestor, _, fetch = _aged(timedelta(minutes=5))
+
+    result = ingestor.ingest(URL, refresh=True)
+
+    assert result.reused is False
+    assert result.expired is False
+    assert fetch.urls == [URL]
+
+
+@pytest.mark.parametrize(("hours", "reloaded"), [(24, True), (0, False)])
+def test_the_limit_comes_from_the_settings_and_zero_switches_it_off(
+    monkeypatch: pytest.MonkeyPatch, hours: int, reloaded: bool
+) -> None:
+    fetched: list[str] = []
+
+    def fake_fetch_document(url: str, **limits: float) -> FetchedDocument:
+        fetched.append(url)
+        return FetchedDocument(kind="html", body=ARTICLE, url=url)
+
+    monkeypatch.setattr(ingest, "fetch_document", fake_fetch_document)
+    for name, value in {
+        "COHERE_API_KEY": "c",
+        "WEAVIATE_URL": "https://example.weaviate.cloud",
+        "WEAVIATE_API_KEY": "w",
+        "GROQ_API_KEY": "g",
+        "SOURCE_MAX_AGE_HOURS": str(hours),
+    }.items():
+        monkeypatch.setenv(name, value)
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    store = FakeStore({URL}, keeps_loaded_at=True, loaded={URL: datetime.now(UTC) - timedelta(hours=25)})
+
+    result = SourceIngestor.from_settings(settings, store, FakeEmbedder()).ingest(URL)
+
+    assert result.reused is not reloaded  # a copy 25 hours old is too old for 24 hours, and fine without a limit
+    assert bool(fetched) is reloaded
 
 
 # --- a PDF file ---
