@@ -10,8 +10,9 @@ The nodes run in this order:
    Otherwise the graph goes to ``abstain``.
 4. ``generate`` writes the answer. If the model says that the excerpts hold no answer the graph goes to ``abstain``,
    otherwise to ``verify``.
-5. ``verify`` checks the citations in plain code. If they hold, the graph ends with the answer, otherwise it goes
-   to ``abstain``.
+5. ``verify`` checks the citations in plain code. If they hold, the graph ends with the answer. If they do not and
+   the limits allow, ``repair`` shows the model its answer and the problem and asks it once to correct the answer,
+   which is checked again. Otherwise the graph goes to ``abstain``.
 6. ``abstain`` ends the graph with the message that the source does not cover the question.
 
 Three limits keep a question from running away: the retries (``max_rewrites``), the calls to the language model
@@ -35,6 +36,7 @@ from chat_with_any_website_agent.prompts import (
     GRADE_PROMPT,
     NOT_COVERED_MARKER,
     NOT_COVERED_MESSAGE,
+    REPAIR_PROMPT,
     REWRITE_PARSER,
     REWRITE_PROMPT,
     Grade,
@@ -59,6 +61,10 @@ RECURSION_MARGIN = 2
 ANSWER_STEPS = 3  # generate, verify and, when the check fails, abstain
 RETRY_STEPS = 6  # rewrite, retrieve, grade, and then an answer
 RETRY_CALLS = 3  # rewrite, grade and generate
+
+# A rejected answer is corrected once, if what is left of the limits allows it.
+MAX_REPAIRS = 1
+REPAIR_STEPS = 3  # repair, verify and, when the check fails again, abstain
 
 # The reasons given when the agent does not answer.
 NO_EXCERPTS_REASON = "The search found no excerpts."
@@ -104,6 +110,7 @@ class AgentAnswer:
             question.
         abstained: ``True`` when the agent decided not to answer from the source.
         reason: Why it did not answer, or ``None`` when it did.
+        draft: The answer of the model that the check of the citations rejected, when that is why it did not answer.
         citations: The excerpts the answer cites. Empty when it did not answer.
         excerpts: The texts of the excerpts the answer is based on.
         sources: The addresses of the sources the answer cites.
@@ -114,6 +121,7 @@ class AgentAnswer:
     answer: str
     abstained: bool
     reason: str | None = None
+    draft: str | None = None
     citations: tuple[Citation, ...] = ()
     excerpts: tuple[str, ...] = ()
     sources: tuple[str, ...] = ()
@@ -169,7 +177,9 @@ class SourceAgent:
         grader = grade_model.bind(**json_mode)
         self._grade_chain = GRADE_PROMPT | grader | GRADE_PARSER
         self._rewrite_chain = REWRITE_PROMPT | grader | REWRITE_PARSER
-        self._answer_chain = ANSWER_PROMPT | answer_model.bind(temperature=0) | StrOutputParser()
+        writer = answer_model.bind(temperature=0)
+        self._answer_chain = ANSWER_PROMPT | writer | StrOutputParser()
+        self._repair_chain = REPAIR_PROMPT | writer | StrOutputParser()
         self._graph = self._build()
 
     def ask(self, question: str, urls: Sequence[str] | None = None) -> AgentAnswer:
@@ -206,6 +216,7 @@ class SourceAgent:
         graph.add_node("rewrite", self._rewrite)
         graph.add_node("generate", self._generate)
         graph.add_node("verify", self._verify)
+        graph.add_node("repair", self._repair)
         graph.add_node("abstain", self._abstain)
         graph.add_edge(START, "analyze")
         graph.add_edge("analyze", "retrieve")
@@ -215,7 +226,8 @@ class SourceAgent:
         )
         graph.add_edge("rewrite", "retrieve")
         graph.add_conditional_edges("generate", _after_generate, {"verify": "verify", "abstain": "abstain"})
-        graph.add_conditional_edges("verify", _after_verify, {"abstain": "abstain", END: END})
+        graph.add_conditional_edges("verify", self._after_verify, {"repair": "repair", "abstain": "abstain", END: END})
+        graph.add_conditional_edges("repair", _after_generate, {"verify": "verify", "abstain": "abstain"})
         graph.add_edge("abstain", END)
         return graph.compile()
 
@@ -271,18 +283,34 @@ class SourceAgent:
     def _generate(self, state: AgentState) -> AgentState:
         values = {"question": state["question"], "excerpts": format_excerpts(state["documents"])}
         answer = self._answer_chain.invoke(values).strip()
-        result: AgentState = {"answer": answer, "llm_calls": state["llm_calls"] + 1, "steps": ["Wrote an answer."]}
-        if _is_not_covered(answer):
-            result["reason"] = NO_ANSWER_REASON
-            result["steps"] = ["The model found no answer in the excerpts."]
-        return result
+        return _written(state, answer, "Wrote an answer.")
 
     def _verify(self, state: AgentState) -> AgentState:
         result = verify_answer(state["answer"], state["documents"])
         if result.valid:
             return {"citations": list(result.citations), "steps": ["Checked the citations: they hold."]}
         problem = result.problem or "The citations do not hold."
-        return {"reason": problem, "steps": [f"Checked the citations: {problem}"]}
+        return {"reason": problem, "draft": state["answer"], "steps": [f"Checked the citations: {problem}"]}
+
+    def _after_verify(self, state: AgentState) -> Literal["repair", "abstain", "__end__"]:
+        if state.get("citations"):
+            return "__end__"
+        calls_left = self._limits.max_llm_calls - state["llm_calls"]
+        steps_used = len(state["steps"])
+        fits = calls_left >= 1 and steps_used + REPAIR_STEPS <= self._limits.max_steps
+        return "repair" if state.get("repairs", 0) < MAX_REPAIRS and fits else "abstain"
+
+    def _repair(self, state: AgentState) -> AgentState:
+        values = {
+            "question": state["question"],
+            "excerpts": format_excerpts(state["documents"]),
+            "answer": state["answer"],
+            "problem": state.get("reason", ""),
+        }
+        answer = self._repair_chain.invoke(values).strip()
+        result = _written(state, answer, "Asked the model to correct its answer.")
+        result["repairs"] = state.get("repairs", 0) + 1
+        return result
 
     def _abstain(self, state: AgentState) -> AgentState:
         reason = state.get("reason") or _grade_reason(state)
@@ -295,12 +323,18 @@ class SourceAgent:
         }
 
 
+def _written(state: AgentState, answer: str, step: str) -> AgentState:
+    """What a node that wrote an answer returns: the answer, or the model's statement that it has none."""
+    result: AgentState = {"answer": answer, "llm_calls": state["llm_calls"] + 1, "steps": [step]}
+    if _is_not_covered(answer):
+        result["reason"] = NO_ANSWER_REASON
+        result["draft"] = ""  # an earlier rejected answer no longer explains the abstention
+        result["steps"] = ["The model found no answer in the excerpts."]
+    return result
+
+
 def _after_generate(state: AgentState) -> Literal["verify", "abstain"]:
     return "abstain" if _is_not_covered(state["answer"]) else "verify"
-
-
-def _after_verify(state: AgentState) -> Literal["abstain", "__end__"]:
-    return "__end__" if state.get("citations") else "abstain"
 
 
 def _is_not_covered(answer: str) -> bool:
@@ -322,6 +356,7 @@ def _answer(state: AgentState) -> AgentAnswer:
         answer=state.get("answer", NOT_COVERED_MESSAGE),
         abstained=abstained,
         reason=state.get("reason") if abstained else None,
+        draft=(state.get("draft") or None) if abstained else None,
         citations=citations,
         excerpts=tuple(document.page_content for document in state.get("documents", [])),
         sources=tuple(dict.fromkeys(citation.url for citation in citations)),

@@ -58,6 +58,8 @@ def format_answer(
     lines = [loaded, "", answer.answer]
     if answer.abstained:
         lines += ["", f"Reason: {answer.reason}"]
+        if answer.draft:
+            lines += ["", "The answer that the check rejected:", f"  {answer.draft}"]
     if answer.citations:
         lines += ["", "Sources cited:"]
         for citation in answer.citations:

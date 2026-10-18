@@ -12,6 +12,7 @@ from chat_with_any_website_agent.prompts import (
     GRADE_PROMPT,
     NOT_COVERED_MARKER,
     NOT_COVERED_MESSAGE,
+    REPAIR_PROMPT,
     REWRITE_PARSER,
     REWRITE_PROMPT,
     Grade,
@@ -59,6 +60,37 @@ def test_the_answer_prompt_asks_for_numbered_citations_and_names_the_marker_for_
     assert "language of the question" in system
     assert "What does pass do?" in human
     assert EXCERPTS in human
+
+
+def test_the_answer_prompt_says_that_every_sentence_needs_a_citation_and_gives_an_example() -> None:
+    system, _ = _texts(ANSWER_PROMPT, question="q", excerpts="e")
+
+    assert "End every sentence of the answer with the number of the excerpt" in system
+    assert "An answer without such citations is rejected." in system
+    assert "For example: The loop ends when the list is empty [1]." in system
+
+
+def test_the_repair_prompt_shows_the_model_its_answer_and_what_was_wrong_with_it() -> None:
+    system, human = _texts(
+        REPAIR_PROMPT,
+        question="What does pass do?",
+        excerpts=EXCERPTS,
+        answer="It does nothing.",
+        problem="The answer cites no excerpt.",
+    )
+
+    assert "End every sentence of the answer with the number of the excerpt" in system
+    assert "Your previous answer was rejected" in system
+    assert "What does pass do?" in human
+    assert EXCERPTS in human
+    assert "Your previous answer:\nIt does nothing." in human
+    assert "Why it was rejected: The answer cites no excerpt." in human
+
+
+def test_the_rewrite_prompt_forbids_adding_facts_that_are_not_in_the_question() -> None:
+    system, _ = _texts(REWRITE_PROMPT, question="q", query="q", reason="r")
+
+    assert "Do not add names, dates or other facts that are not in the question." in system
 
 
 @pytest.mark.parametrize("prompt", [GRADE_PROMPT, ANSWER_PROMPT])

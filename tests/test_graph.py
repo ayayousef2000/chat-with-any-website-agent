@@ -271,25 +271,81 @@ def test_a_model_that_finds_no_answer_in_the_excerpts_ends_in_an_abstention(repl
     assert "The model found no answer in the excerpts." in result.steps
 
 
-def test_an_answer_without_a_citation_is_not_given() -> None:
-    setup = _setup([ENOUGH], ["The pass statement does nothing."])
+UNCITED_ANSWER = "The pass statement does nothing."
+
+
+def test_an_answer_without_a_citation_is_corrected_once_and_then_given() -> None:
+    setup = _setup([ENOUGH], [UNCITED_ANSWER, CITED_ANSWER])
+
+    result = setup.agent.ask(QUESTION)
+
+    assert not result.abstained
+    assert result.answer == CITED_ANSWER
+    assert result.draft is None
+    assert result.llm_calls == 3
+    assert result.steps[-4:] == (
+        "Wrote an answer.",
+        f"Checked the citations: {NO_CITATION_PROBLEM}",
+        "Asked the model to correct its answer.",
+        "Checked the citations: they hold.",
+    )
+    repair_request = setup.answerer.requests[1][0][-1]["content"]
+    assert f"Your previous answer:\n{UNCITED_ANSWER}" in repair_request
+    assert f"Why it was rejected: {NO_CITATION_PROBLEM}" in repair_request
+
+
+def test_an_answer_that_is_rejected_again_is_not_given_and_the_rejected_text_is_kept() -> None:
+    setup = _setup([ENOUGH], [UNCITED_ANSWER, "Still no citation here."])
 
     result = setup.agent.ask(QUESTION)
 
     assert result.abstained
     assert result.answer == NOT_COVERED_MESSAGE
     assert result.reason == NO_CITATION_PROBLEM
+    assert result.draft == "Still no citation here."
     assert result.citations == ()
     assert result.sources == ()
+    assert len(setup.answerer.requests) == 2  # the answer and one correction, never more
 
 
-def test_an_answer_that_cites_an_excerpt_that_does_not_exist_is_not_given() -> None:
-    setup = _setup([ENOUGH], ["The pass statement does nothing [7]."])
+def test_an_answer_that_cites_an_excerpt_that_does_not_exist_is_corrected_too() -> None:
+    setup = _setup([ENOUGH], ["The pass statement does nothing [7].", CITED_ANSWER])
+
+    result = setup.agent.ask(QUESTION)
+
+    assert not result.abstained
+    assert "The answer cites excerpt 7, which does not exist." in setup.answerer.requests[1][0][-1]["content"]
+
+
+def test_a_correction_that_says_the_excerpts_hold_no_answer_ends_in_an_abstention_without_a_draft() -> None:
+    setup = _setup([ENOUGH], [UNCITED_ANSWER, "NOT_COVERED"])
 
     result = setup.agent.ask(QUESTION)
 
     assert result.abstained
-    assert result.reason == "The answer cites excerpt 7, which does not exist."
+    assert result.reason == NO_ANSWER_REASON
+    assert result.draft is None
+
+
+def test_no_correction_is_asked_when_the_calls_to_the_model_are_used_up() -> None:
+    setup = _setup([ENOUGH], [UNCITED_ANSWER], limits=AgentLimits(max_steps=12, max_llm_calls=2, max_rewrites=2))
+
+    result = setup.agent.ask(QUESTION)
+
+    assert result.abstained
+    assert result.reason == NO_CITATION_PROBLEM
+    assert result.draft == UNCITED_ANSWER
+    assert len(setup.answerer.requests) == 1
+
+
+def test_no_correction_is_asked_when_it_cannot_finish_within_the_step_limit() -> None:
+    setup = _setup([ENOUGH], [UNCITED_ANSWER], limits=AgentLimits(max_steps=7, max_llm_calls=8, max_rewrites=2))
+
+    result = setup.agent.ask(QUESTION)
+
+    assert result.abstained
+    assert result.reason == NO_CITATION_PROBLEM
+    assert len(setup.answerer.requests) == 1
 
 
 # --- the limits ---

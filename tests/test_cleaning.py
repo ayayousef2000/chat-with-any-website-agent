@@ -29,6 +29,12 @@ def test_removes_edit_links_from_headings() -> None:
     assert clean_text("## History\n\\[edit\\]\n\nBody.") == "## History\n\nBody."
 
 
+def test_removes_the_link_symbol_that_documentation_sites_put_after_a_heading() -> None:
+    pilcrow = chr(0x00B6)
+
+    assert clean_text(f"## 4.6. pass Statements{pilcrow}\n\nBody.") == "## 4.6. pass Statements\n\nBody."
+
+
 def test_drops_repeated_paragraphs_case_insensitively() -> None:
     text = "Accept cookies\n\nReal content.\n\naccept COOKIES\n\nMore content."
     assert clean_text(text) == "Accept cookies\n\nReal content.\n\nMore content."

@@ -76,6 +76,7 @@ _INLINE_TAGS = re.compile(r"</?(?:sub|sup|span|br)\b[^>]*>")
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f​-‏﻿]")
 _INLINE_WHITESPACE = re.compile(r"[ \t]+")  # NFKC normalization already maps non-breaking spaces to spaces
 _EXTRA_NEWLINES = re.compile(r"\n{3,}")
+_PILCROW = chr(0x00B6)  # documentation sites put it after a heading as a link to that heading
 
 
 def _line_key(line: str) -> str:
@@ -113,8 +114,8 @@ def collapse_repeated_lines(lines: list[str]) -> list[str]:
 def clean_text(text: str) -> str:
     """Normalize unicode and whitespace and remove page noise.
 
-    Removes the "edit" links of Wikipedia-style sites in many languages, a line that repeats the line before it,
-    and repeated paragraphs (menus, cookie banners, etc.).
+    Removes the "edit" links of Wikipedia-style sites in many languages, the link symbol after the headings of
+    documentation sites, a line that repeats the line before it, and repeated paragraphs (menus, cookie banners, etc.).
 
     Args:
         text: The text extracted from a page.
@@ -124,7 +125,7 @@ def clean_text(text: str) -> str:
     """
     text = unicodedata.normalize("NFKC", text)
     text = text.replace("\r\n", "\n").replace("\r", "\n")
-    text = _CONTROL_CHARS.sub("", text)
+    text = _CONTROL_CHARS.sub("", text).replace(_PILCROW, "")
     text = _FOOTNOTES.sub("", text)
     text = _EDIT_LINKS.sub("", text)
     text = _EDIT_ONLY_LINES.sub("", text)
