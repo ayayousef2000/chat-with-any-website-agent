@@ -42,13 +42,13 @@ from chat_with_any_website_agent.prompts import (
     CHOOSE_PROMPT,
     GRADE_PARSER,
     GRADE_PROMPT,
-    NOT_COVERED_MARKER,
     NOT_COVERED_MESSAGE,
     REPAIR_PROMPT,
     REWRITE_PARSER,
     REWRITE_PROMPT,
     Grade,
     format_links,
+    is_not_covered,
 )
 from chat_with_any_website_agent.state import AgentState, new_state
 
@@ -559,7 +559,7 @@ def _after_retrieve(state: AgentState) -> Literal["grade", "abstain"]:
 def _written(state: AgentState, answer: str, step: str) -> AgentState:
     """What a node that wrote an answer returns: the answer, or the model's statement that it has none."""
     result: AgentState = {"answer": answer, "llm_calls": state["llm_calls"] + 1, "steps": [step]}
-    if _is_not_covered(answer):
+    if is_not_covered(answer):
         result["reason"] = NO_ANSWER_REASON
         result["draft"] = ""  # an earlier rejected answer no longer explains the abstention
         result["steps"] = ["The model found no answer in the excerpts."]
@@ -567,11 +567,7 @@ def _written(state: AgentState, answer: str, step: str) -> AgentState:
 
 
 def _after_generate(state: AgentState) -> Literal["verify", "abstain"]:
-    return "abstain" if _is_not_covered(state["answer"]) else "verify"
-
-
-def _is_not_covered(answer: str) -> bool:
-    return answer.strip(" \t\r\n.\"'`*").upper() == NOT_COVERED_MARKER
+    return "abstain" if is_not_covered(state["answer"]) else "verify"
 
 
 def _grade_reason(state: AgentState) -> str:

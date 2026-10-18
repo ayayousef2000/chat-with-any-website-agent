@@ -81,6 +81,7 @@ def test_default_limits(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.eval_max_groq_calls == 200
     assert settings.eval_max_groq_tokens == 120_000
     assert settings.eval_judge_model == "openai/gpt-oss-20b"
+    assert (settings.eval_crawl_max_pages, settings.eval_crawl_max_depth) == (40, 2)
 
 
 def test_overrides_come_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -156,6 +157,8 @@ def test_keys_do_not_appear_in_the_text_form_of_the_settings(monkeypatch: pytest
         "EVAL_MAX_COHERE_CALLS",
         "EVAL_MAX_GROQ_CALLS",
         "EVAL_MAX_GROQ_TOKENS",
+        "EVAL_CRAWL_MAX_PAGES",
+        "EVAL_CRAWL_MAX_DEPTH",
     ],
 )
 def test_values_that_must_be_positive_reject_zero(monkeypatch: pytest.MonkeyPatch, name: str) -> None:

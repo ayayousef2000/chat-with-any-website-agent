@@ -40,6 +40,10 @@ class AgentRuntime:
         ingestor: Prepares a web page or PDF file for questions.
         store: The connection to Weaviate.
         chats: The Groq clients, which hold connections.
+        retriever: Finds the excerpts of the stored sources; the agent uses this one.
+        answer_model: The model that writes answers; the agent uses this one.
+        follower: Opens the links of stored pages, within the rules of the sites. The agent only uses it when it may
+            follow links.
         cohere: The Cohere embedder and reranker, which hold connections.
     """
 
@@ -47,6 +51,9 @@ class AgentRuntime:
     ingestor: SourceIngestor
     store: WeaviateStore
     chats: tuple[GroqClient, ...]
+    retriever: SourceRetriever
+    answer_model: GroqChatModel
+    follower: LinkFollower
     cohere: tuple[CohereEmbedder | CohereReranker, ...] = ()
 
     def close(self) -> None:
@@ -108,17 +115,16 @@ def build_runtime(
     follower = LinkFollower(
         ingestor, store, RobotsChecker(timeout=settings.fetch_timeout_seconds), check=check_followed
     )
-    agent = SourceAgent(
-        SourceRetriever(store, embedder, reranker),
-        GroqChatModel(answerer),
-        GroqChatModel(grader),
-        limits,
-        follower if follow_links else None,
-    )
+    retriever = SourceRetriever(store, embedder, reranker)
+    answer_model = GroqChatModel(answerer)
+    agent = SourceAgent(retriever, answer_model, GroqChatModel(grader), limits, follower if follow_links else None)
     return AgentRuntime(
         agent=agent,
         ingestor=ingestor,
         store=store,
         chats=(answerer, grader),
+        retriever=retriever,
+        answer_model=answer_model,
+        follower=follower,
         cohere=(embedder, reranker),
     )

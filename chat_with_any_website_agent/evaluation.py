@@ -18,7 +18,7 @@ import json
 import time
 import unicodedata
 from dataclasses import asdict, dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from chat_with_any_website_agent.errors import BudgetExceededError, DatasetError, ServiceBusyError
 from chat_with_any_website_agent.usage import COHERE, GROQ, UsageCounter
@@ -122,6 +122,14 @@ class System(Protocol):
 
     def close(self) -> None:
         """Let go of what the system holds, such as connections."""
+
+
+@runtime_checkable
+class Resettable(Protocol):
+    """A system that can delete what it stored, to start a run from nothing."""
+
+    def reset(self) -> None:
+        """Delete everything the system stored."""
 
 
 class ChatClient(Protocol):

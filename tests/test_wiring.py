@@ -233,3 +233,15 @@ def test_the_agent_stays_on_its_pages_when_following_links_is_switched_off(monke
     runtime = build_runtime(settings, UsageCounter(), follow_links=False)
 
     assert runtime.agent._links is None
+
+
+def test_the_runtime_gives_the_parts_that_the_baselines_share_with_the_agent(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings(monkeypatch)
+    _fakes(monkeypatch)
+
+    runtime = build_runtime(settings, UsageCounter())
+
+    assert runtime.retriever is runtime.agent._retriever
+    assert runtime.answer_model is not None
+    assert isinstance(runtime.follower, LinkFollower)
+    assert runtime.agent._links is runtime.follower  # the agent follows links with the same follower

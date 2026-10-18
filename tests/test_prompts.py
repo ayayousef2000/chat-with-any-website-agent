@@ -22,6 +22,7 @@ from chat_with_any_website_agent.prompts import (
     LinkChoice,
     Rewrite,
     format_links,
+    is_not_covered,
 )
 
 if TYPE_CHECKING:
@@ -217,3 +218,17 @@ def test_a_long_text_and_a_long_path_are_cut() -> None:
 
 def test_no_links_are_an_empty_list() -> None:
     assert format_links([]) == ""
+
+
+@pytest.mark.parametrize(
+    "reply", ["NOT_COVERED", "not_covered.", "**NOT_COVERED**", ' "NOT_COVERED" \n', "`NOT_COVERED`"]
+)
+def test_the_marker_is_recognized_as_the_whole_reply_in_any_dress(reply: str) -> None:
+    assert is_not_covered(reply)
+
+
+@pytest.mark.parametrize(
+    "reply", ["", "NOT_COVERED, but see [1]", "The answer is NOT_COVERED", "The pass statement [1]."]
+)
+def test_a_reply_that_only_mentions_the_marker_is_an_answer(reply: str) -> None:
+    assert not is_not_covered(reply)

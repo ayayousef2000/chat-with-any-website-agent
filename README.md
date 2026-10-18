@@ -94,6 +94,17 @@ uv run agent-eval summary eval/results.json        # read saved results; no serv
 
 A run stops cleanly at the limits of calls and tokens in the settings, and `--resume` continues it. Results are saved after every question and include how the agent got to each answer.
 
+Four systems can be scored with `--system`, so that the agent is compared with simpler ways of answering from the same retriever, the same answer model and the same prompt:
+
+| System | What it does |
+|---|---|
+| `agent` | The full agent: grades, retries, follows links of the same site, checks its citations |
+| `agent-single` | The same agent without the ability to follow links |
+| `plain` | One search over the given pages and one call to the answer model, with no further steps |
+| `crawl` | The plain pipeline over the given pages and the pages around them, loaded first (at most `EVAL_CRAWL_MAX_PAGES` pages, `EVAL_CRAWL_MAX_DEPTH` links deep) |
+
+`--category NAME` answers only the questions of one category (it can be repeated). `--fresh` empties the `eval` tenant first, so that loading pages is part of the cost of a run; it is refused for any other tenant and together with `--resume`.
+
 ## Configuration
 
 Settings are read from the environment or from `.env`; `.env.example` lists all of them with their defaults. The ones that shape the agent:

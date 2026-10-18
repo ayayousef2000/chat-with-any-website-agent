@@ -193,3 +193,34 @@ def test_the_system_for_a_run_is_built_with_a_patient_retrier(monkeypatch: pytes
     assert call["retrier"].retryable == GROQ_RETRYABLE
     assert call["retrier"].policy.budget > 45.0
     assert call["check_followed"] is False  # the pages of one run are not asked about again while it goes on
+
+
+def test_the_agent_without_links_is_built_without_the_ability_to_follow_them(monkeypatch: pytest.MonkeyPatch) -> None:
+    built: list[dict[str, Any]] = []
+    runtime = SimpleNamespace(ingestor=FakeIngestor(), agent=FakeAgent(), close=lambda: None)
+
+    def fake_build_runtime(settings: object, usage: UsageCounter, **options: Any) -> SimpleNamespace:
+        built.append(options)
+        return runtime
+
+    monkeypatch.setattr(agent_system, "build_runtime", fake_build_runtime)
+
+    system = agent_system.create_single_page_agent_system(cast("Any", object()), UsageCounter())
+
+    assert isinstance(system, AgentSystem)
+    (options,) = built
+    assert options["follow_links"] is False
+    assert options["check_followed"] is False
+    assert isinstance(options["retrier"], Retrier)
+    assert SYSTEMS["agent-single"] is agent_system.create_single_page_agent_system
+
+
+def test_the_agent_system_can_empty_the_tenant() -> None:
+    cleared: list[str] = []
+    runtime = SimpleNamespace(
+        ingestor=FakeIngestor(), agent=FakeAgent(), store=SimpleNamespace(clear=lambda: cleared.append("x"))
+    )
+
+    AgentSystem(cast("AgentRuntime", runtime)).reset()
+
+    assert cleared == ["x"]
