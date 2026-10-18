@@ -61,7 +61,7 @@ Python 3.14 or newer and [uv](https://docs.astral.sh/uv/). You need your own API
 uv sync                      # create the virtual environment and install the locked dependencies
 cp .env.example .env         # then fill in your own keys; the file is never committed
 uv run agent-smoke --dry-run # show what a check of the three services would do, without calling anything
-uv run agent-smoke --prepare # check the services, create the Weaviate collection and tenants if missing, and add the field that keeps when a source was loaded
+uv run agent-smoke --prepare # check the services, create the Weaviate collection and tenants if missing, and add the fields that keep when a source was loaded, which version of the page it is and its links
 ```
 
 ## Usage

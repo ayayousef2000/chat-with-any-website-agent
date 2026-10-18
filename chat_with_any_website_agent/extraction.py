@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 import trafilatura
 
 from chat_with_any_website_agent.errors import ExtractionError
+from chat_with_any_website_agent.links import Link, collect_links
 
 NO_TEXT_MESSAGE = (
     "No readable text was found on this page. It may load its content with JavaScript or block automated tools. "
@@ -48,11 +49,14 @@ class ExtractedPage:
         url: The address of the page.
         title: The title of the page, or its address when it has none.
         text: The readable content as Markdown, followed by a "Contact details" section when the page shows any.
+        links: The links of the page that may be followed: to other pages of the same site, from the whole page,
+            including its menus. A PDF file has none.
     """
 
     url: str
     title: str
     text: str
+    links: tuple[Link, ...] = ()
 
 
 def extract_page(html: bytes, url: str) -> ExtractedPage:
@@ -73,6 +77,7 @@ def extract_page(html: bytes, url: str) -> ExtractedPage:
         raise ExtractionError(UNREADABLE_MESSAGE)
 
     contacts = _contact_details(tree)  # before the extraction, which changes the tree
+    links = collect_links(_anchors(tree), url)  # also before it: the extraction drops menus, which hold the links
     metadata = trafilatura.extract_metadata(tree, default_url=url)
     text = trafilatura.extract(
         tree,
@@ -88,7 +93,21 @@ def extract_page(html: bytes, url: str) -> ExtractedPage:
         raise ExtractionError(NO_TEXT_MESSAGE)
 
     title = metadata.title if metadata and metadata.title else url
-    return ExtractedPage(url=url, title=title, text=f"{text}\n\n{contacts}" if contacts else text)
+    return ExtractedPage(url=url, title=title, text=f"{text}\n\n{contacts}" if contacts else text, links=links)
+
+
+def _anchors(tree: Any) -> list[tuple[str, str]]:
+    """The address and the shown text of every anchor of a page.
+
+    An anchor without text may name itself in an attribute, as an icon button does.
+    """
+    return [
+        (
+            anchor.get("href") or "",
+            " ".join(anchor.text_content().split()) or anchor.get("title") or anchor.get("aria-label") or "",
+        )
+        for anchor in tree.iter("a")
+    ]
 
 
 def _phone_digits(value: str) -> str | None:

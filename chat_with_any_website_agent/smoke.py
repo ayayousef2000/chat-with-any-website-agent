@@ -26,6 +26,7 @@ from chat_with_any_website_agent.retrying import Retrier, RetryPolicy
 from chat_with_any_website_agent.usage import UsageCounter
 from chat_with_any_website_agent.vector_store import (
     AGE_PROPERTY,
+    LINKS_PROPERTY,
     VERSION_PROPERTIES,
     WeaviateStore,
     ensure_record_properties,
@@ -123,14 +124,14 @@ def _version_check(collection: Any, *, added: list[str]) -> Check:
     passes and says what to run.
     """
     names = property_names(collection)
-    missing = [name for name in (AGE_PROPERTY, *VERSION_PROPERTIES) if name not in names]
+    missing = [name for name in (AGE_PROPERTY, *VERSION_PROPERTIES, LINKS_PROPERTY) if name not in names]
     if missing:
         detail = (
-            f"the fields {', '.join(missing)} are missing, so the age and the version of stored sources are not known "
-            "and a page that changed is not noticed; run with --prepare"
+            f"the fields {', '.join(missing)} are missing, so the age, the version and the links of stored sources "
+            "are not known (a page that changed is not noticed and no link is followed); run with --prepare"
         )
         return Check("weaviate", "source versions", True, detail)
-    detail = "the collection keeps when a source was loaded and which version of the page it is"
+    detail = "the collection keeps when a source was loaded, which version of the page it is and its links"
     return Check("weaviate", "source versions", True, detail + (f"; added now: {', '.join(added)}" if added else ""))
 
 
@@ -304,8 +305,8 @@ def describe_plan(settings: Settings, services: Sequence[str], *, prepare: bool)
     if "weaviate" in services:
         action = (
             f"create {settings.weaviate_collection} and the tenants {', '.join(ENVIRONMENTS)} if missing, "
-            f"and add the fields {', '.join((AGE_PROPERTY, *VERSION_PROPERTIES))} (when a source was loaded and which "
-            "version of the page it is) if the collection lacks them"
+            f"and add the fields {', '.join((AGE_PROPERTY, *VERSION_PROPERTIES, LINKS_PROPERTY))} (when a source was "
+            "loaded, which version of the page it is and its links) if the collection lacks them"
             if prepare
             else f"read {settings.weaviate_collection} and its tenants (nothing is written)"
         )

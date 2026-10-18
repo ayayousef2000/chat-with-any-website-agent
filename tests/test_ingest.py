@@ -13,6 +13,7 @@ from chat_with_any_website_agent.errors import ExtractionError, FetchError, Inva
 from chat_with_any_website_agent.extraction import extract_page
 from chat_with_any_website_agent.fetching import FetchedDocument, Validators
 from chat_with_any_website_agent.ingest import IngestResult, SourceIngestor
+from chat_with_any_website_agent.links import Link
 from chat_with_any_website_agent.vector_store import SourceRecord
 from tests.pdf_files import make_pdf
 
@@ -383,8 +384,35 @@ def test_a_page_that_changed_is_loaded_again_with_its_new_version() -> None:
     assert len(embedder.batches) == 1
     assert len(store.replaced) == 1
     assert store.written == [
-        SourceRecord(loaded_at=NOW, etag='"v2"', last_modified=NEW_MODIFIED, content_hash=TEXT_HASH)
+        SourceRecord(
+            loaded_at=NOW,
+            etag='"v2"',
+            last_modified=NEW_MODIFIED,
+            content_hash=TEXT_HASH,
+            links=(Link("https://example.com/", "Home"),),
+        )
     ]
+
+
+def test_the_links_of_a_page_are_stored_with_it() -> None:
+    page = b"""<html><head><title>Guide</title></head><body>
+<nav><a href="/pricing">Pricing</a> <a href="https://other.example/">Elsewhere</a></nav>
+<article><h1>Guide</h1>
+<p>Retrieval systems find relevant passages before a model writes an answer. This paragraph is long enough
+for the extractor to treat it as real content rather than boilerplate on the page.</p>
+<p>Read the <a href="/guide/details#start">details</a> for more about how chunking and embeddings work.</p>
+</article></body></html>"""
+    store, embedder = FakeStore(), FakeEmbedder()
+    fetch = FakeFetch(FetchedDocument(kind="html", body=page, url=URL))
+
+    _ingestor(store, embedder, fetch).ingest(URL)
+
+    [record] = store.written
+    assert record is not None
+    assert record.links == (
+        Link("https://example.com/pricing", "Pricing"),  # the menu counts, a link of another site does not
+        Link("https://example.com/guide/details", "details"),
+    )
 
 
 def test_a_stored_copy_without_a_fingerprint_is_loaded_again_once_to_learn_its_version() -> None:
@@ -565,6 +593,18 @@ def test_a_pdf_file_is_read_page_by_page_and_stored_with_its_title() -> None:
     text = "\n".join(chunk.text for chunk in store.replaced[0][2])
     assert "First page of the manual." in text
     assert "Second page with the details." in text
+
+
+def test_a_pdf_file_is_stored_without_links() -> None:
+    pdf = make_pdf([["First page of the manual."]], title="Manual")
+    store, embedder = FakeStore(), FakeEmbedder()
+    fetch = FakeFetch(FetchedDocument(kind="pdf", body=pdf, url="https://example.com/manual.pdf"))
+
+    _ingestor(store, embedder, fetch).ingest("https://example.com/manual.pdf")
+
+    [record] = store.written
+    assert record is not None
+    assert record.links == ()
 
 
 def test_the_page_limit_for_pdf_files_comes_from_the_ingestor() -> None:

@@ -210,3 +210,41 @@ def test_a_page_of_only_a_contact_link_still_counts_as_having_no_readable_text()
         extract_page(html, URL)
 
     assert str(caught.value) == extraction.NO_TEXT_MESSAGE
+
+
+# --- the links ---
+
+
+def test_the_links_of_a_page_include_its_menu_and_leave_out_other_sites() -> None:
+    body = (
+        '<a href="/pricing">Pricing</a><a href="https://other.example/page">Elsewhere</a>'
+        '<a href="tel:+442079460958">Call</a><a href="#top">Top</a>'
+    )
+
+    links = extract_page(_page(body), URL).links
+
+    assert [(link.url, link.text) for link in links] == [("https://company.example/pricing", "Pricing")]
+
+
+def test_the_menu_that_the_text_extraction_drops_still_gives_its_links() -> None:
+    page = extract_page(ARTICLE, "https://example.com/a")
+
+    assert [(link.url, link.text) for link in page.links] == [
+        ("https://example.com/", "Home"),
+        ("https://example.com/about", "About"),
+    ]
+
+
+def test_a_link_without_text_is_named_by_its_title_or_its_label() -> None:
+    body = '<a href="/docs" title="Documentation"><img src="x.png"></a><a href="/blog" aria-label="Blog"></a>'
+
+    links = extract_page(_page(body), URL).links
+
+    assert [(link.url, link.text) for link in links] == [
+        ("https://company.example/docs", "Documentation"),
+        ("https://company.example/blog", "Blog"),
+    ]
+
+
+def test_a_page_without_links_has_none() -> None:
+    assert extract_page(_page(""), URL).links == ()
