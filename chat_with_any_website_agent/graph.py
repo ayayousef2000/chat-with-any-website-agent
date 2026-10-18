@@ -288,7 +288,11 @@ class SourceAgent:
     def _verify(self, state: AgentState) -> AgentState:
         result = verify_answer(state["answer"], state["documents"])
         if result.valid:
-            return {"citations": list(result.citations), "steps": ["Checked the citations: they hold."]}
+            return {
+                "answer": result.answer,  # with the citations written as [1]
+                "citations": list(result.citations),
+                "steps": ["Checked the citations: they hold."],
+            }
         problem = result.problem or "The citations do not hold."
         return {"reason": problem, "draft": state["answer"], "steps": [f"Checked the citations: {problem}"]}
 

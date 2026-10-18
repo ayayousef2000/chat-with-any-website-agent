@@ -37,22 +37,28 @@ class FakeIngestor:
         return IngestResult(url=f"{url}/", reused=True)
 
 
-class FakeAgent:
-    """Answers every question the same way and records what it was asked."""
+ANSWERED = AgentAnswer(
+    answer="The answer [1].", abstained=False, excerpts=("An excerpt.",), sources=(f"{URL}/",), llm_calls=2
+)
 
-    def __init__(self) -> None:
+
+class FakeAgent:
+    """Gives the answer it was given to every question and records what it was asked."""
+
+    def __init__(self, answer: AgentAnswer = ANSWERED) -> None:
+        self.answer = answer
         self.asked: list[tuple[str, list[str]]] = []
 
     def ask(self, question: str, urls: list[str]) -> AgentAnswer:
         self.asked.append((question, urls))
-        return AgentAnswer(
-            answer="The answer [1].", abstained=False, excerpts=("An excerpt.",), sources=(f"{URL}/",), llm_calls=2
-        )
+        return self.answer
 
 
-def _system(ingestor: FakeIngestor | None = None) -> tuple[AgentSystem, FakeIngestor, FakeAgent, list[str]]:
+def _system(
+    ingestor: FakeIngestor | None = None, answer: AgentAnswer = ANSWERED
+) -> tuple[AgentSystem, FakeIngestor, FakeAgent, list[str]]:
     fake_ingestor = ingestor or FakeIngestor()
-    agent = FakeAgent()
+    agent = FakeAgent(answer)
     closed: list[str] = []
     runtime = SimpleNamespace(ingestor=fake_ingestor, agent=agent, close=lambda: closed.append("closed"))
     return AgentSystem(cast("AgentRuntime", runtime)), fake_ingestor, agent, closed
@@ -75,8 +81,30 @@ def test_a_source_that_cannot_be_loaded_is_a_failed_answer_and_not_an_error() ->
 
     outcome = system.ask(Case(url=URL, question="Q?"))
 
-    assert outcome == Outcome(answer="The source could not be loaded: The page could not be downloaded.")
+    assert outcome == Outcome(
+        answer="The source could not be loaded: The page could not be downloaded.",
+        reason="The page could not be downloaded.",
+    )
     assert agent.asked == []
+
+
+def test_why_the_agent_did_not_answer_and_how_it_got_there_are_passed_on() -> None:
+    refused = AgentAnswer(
+        answer="The source does not cover this question, so there is no answer to give from it.",
+        abstained=True,
+        reason="The answer cites no excerpt.",
+        draft="A rejected answer.",
+        excerpts=("An excerpt.",),
+        steps=("Read the question.", "Decided not to answer: The answer cites no excerpt."),
+    )
+    system, _, _, _ = _system(answer=refused)
+
+    outcome = system.ask(Case(url=URL, question="Q?"))
+
+    assert outcome.reason == "The answer cites no excerpt."
+    assert outcome.draft == "A rejected answer."
+    assert outcome.steps == ("Read the question.", "Decided not to answer: The answer cites no excerpt.")
+    assert outcome.excerpts == ("An excerpt.",)
 
 
 @pytest.mark.parametrize("error", [InvalidURLError("bad address"), ExtractionError("no text")])

@@ -7,6 +7,7 @@ from chat_with_any_website_agent.citations import (
     NO_CITATION_PROBLEM,
     Citation,
     format_excerpts,
+    normalize_citations,
     verify_answer,
 )
 
@@ -174,3 +175,61 @@ def test_the_arabic_question_mark_ends_a_sentence() -> None:
     result = verify_answer(answer, [ARABIC])
 
     assert result.problem == "A sentence is not supported by the excerpts it cites: ظهرت النسخة الأولى سنة 1989 [1]."
+
+
+# --- other styles of brackets ---
+
+LENTICULAR = (chr(0x3010), chr(0x3011))  # the black lenticular brackets that some models cite with
+FULL_WIDTH = (chr(0xFF3B), chr(0xFF3D))
+DAGGER = chr(0x2020)
+
+
+def _cite(number: str, brackets: tuple[str, str] = LENTICULAR) -> str:
+    return f"{brackets[0]}{number}{brackets[1]}"
+
+
+def test_a_citation_in_lenticular_brackets_counts_and_is_written_with_plain_brackets() -> None:
+    result = verify_answer(f"The pass statement does nothing {_cite('1')}.", [PASS, SET])
+
+    assert result.valid
+    assert result.answer == "The pass statement does nothing [1]."
+    assert [citation.number for citation in result.citations] == [1]
+
+
+def test_a_label_after_the_number_is_dropped() -> None:
+    for label in ("source", "L5-L9"):
+        result = verify_answer(f"The pass statement does nothing {_cite('1' + DAGGER + label)}.", [PASS])
+
+        assert result.valid
+        assert result.answer == "The pass statement does nothing [1]."
+
+
+def test_full_width_brackets_and_lists_of_numbers_are_read() -> None:
+    answer = f"The pass statement does nothing and a set is an unordered collection {_cite('1, 2', FULL_WIDTH)}."
+
+    result = verify_answer(answer, [PASS, SET])
+
+    assert result.valid
+    assert result.answer.endswith("collection [1, 2].")
+    assert [citation.number for citation in result.citations] == [1, 2]
+
+
+def test_a_citation_after_the_full_stop_in_other_brackets_still_belongs_to_the_sentence_before_it() -> None:
+    result = verify_answer(f"A set is an unordered collection without duplicates. {_cite('2')}", [PASS, SET])
+
+    assert result.valid
+    assert result.answer == "A set is an unordered collection without duplicates. [2]"
+
+
+def test_the_other_styles_are_checked_like_plain_brackets() -> None:
+    assert not verify_answer(f"The pass statement does nothing {_cite('3')}.", [PASS, SET]).valid
+    unsupported = verify_answer(f"Python was released in 1991 by a Dutch programmer {_cite('1')}.", [PASS])
+    assert not unsupported.valid
+    assert unsupported.answer == "Python was released in 1991 by a Dutch programmer [1]."
+
+
+def test_plain_citations_are_left_as_they_are() -> None:
+    text = "One [1]. Two [1, 2][3]. No citation here."
+
+    assert normalize_citations(text) == text
+    assert normalize_citations("") == ""

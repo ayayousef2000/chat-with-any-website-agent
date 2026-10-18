@@ -58,14 +58,22 @@ class AgentSystem:
             case: The question.
 
         Returns:
-            The answer with the excerpts it is based on, or a message that a source could not be loaded.
+            The answer with the excerpts it is based on, and how the agent got to it, or a message that a source
+            could not be loaded.
         """
         try:
             urls = [self._runtime.ingestor.ingest(url).url for url in (case.url, *case.sources)]
         except SOURCE_ERRORS as error:
-            return Outcome(answer=f"The source could not be loaded: {error}")
+            return Outcome(answer=f"The source could not be loaded: {error}", reason=str(error))
         answer = self._runtime.agent.ask(case.question, urls)
-        return Outcome(answer=answer.answer, excerpts=answer.excerpts, sources=answer.sources)
+        return Outcome(
+            answer=answer.answer,
+            excerpts=answer.excerpts,
+            sources=answer.sources,
+            reason=answer.reason,
+            steps=answer.steps,
+            draft=answer.draft,
+        )
 
     def close(self) -> None:
         """Close the connections of the agent."""

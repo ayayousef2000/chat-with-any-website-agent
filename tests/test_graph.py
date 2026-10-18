@@ -294,6 +294,19 @@ def test_an_answer_without_a_citation_is_corrected_once_and_then_given() -> None
     assert f"Why it was rejected: {NO_CITATION_PROBLEM}" in repair_request
 
 
+def test_a_citation_in_other_brackets_is_accepted_and_written_with_plain_brackets() -> None:
+    answer = f"The pass statement does nothing {chr(0x3010)}1{chr(0x3011)}."
+    setup = _setup([ENOUGH], [answer])
+
+    result = setup.agent.ask(QUESTION)
+
+    assert not result.abstained
+    assert result.answer == CITED_ANSWER
+    assert [citation.number for citation in result.citations] == [1]
+    assert len(setup.answerer.requests) == 1  # no correction was needed
+    assert result.llm_calls == 2
+
+
 def test_an_answer_that_is_rejected_again_is_not_given_and_the_rejected_text_is_kept() -> None:
     setup = _setup([ENOUGH], [UNCITED_ANSWER, "Still no citation here."])
 

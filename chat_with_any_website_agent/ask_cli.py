@@ -35,8 +35,20 @@ EXIT_BAD_SETTINGS = 2
 EXIT_SERVICE = 3
 
 
+def _describe(result: IngestResult, name: str) -> str:
+    if result.reused:
+        return f"Reused the stored copy of {name}."
+    return f"Loaded {name} ({result.chunk_count} chunk(s) stored)."
+
+
 def format_answer(
-    ingested: IngestResult, answer: AgentAnswer, usage: UsageCounter, seconds: float, *, show_steps: bool = True
+    ingested: IngestResult,
+    answer: AgentAnswer,
+    usage: UsageCounter,
+    seconds: float,
+    *,
+    show_steps: bool = True,
+    extras: Sequence[IngestResult] = (),
 ) -> str:
     """Write the answer, its sources, the steps the agent took and what the question cost.
 
@@ -44,18 +56,16 @@ def format_answer(
         ingested: What happened to the source.
         answer: The answer of the agent.
         usage: The counter that counted the calls and tokens.
-        seconds: How long the question took, including the loading of the source.
+        seconds: How long the question took, including the loading of the sources.
         show_steps: Whether to list the steps of the agent.
+        extras: What happened to the further sources that were searched as well.
 
     Returns:
         The text to print.
     """
-    loaded = (
-        "Reused the stored copy of the source."
-        if ingested.reused
-        else f"Loaded the source ({ingested.chunk_count} chunk(s) stored)."
-    )
-    lines = [loaded, "", answer.answer]
+    lines = [_describe(ingested, "the source")]
+    lines += [_describe(extra, extra.url) for extra in extras]
+    lines += ["", answer.answer]
     if answer.abstained:
         lines += ["", f"Reason: {answer.reason}"]
         if answer.draft:
@@ -81,6 +91,9 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agent-ask", description=__doc__)
     parser.add_argument("url", help="The address of a web page or PDF file")
     parser.add_argument("question", help="The question, in quotes")
+    parser.add_argument(
+        "--also", action="append", default=[], metavar="URL", help="A further source to search as well; can be repeated"
+    )
     parser.add_argument("--tenant", help="The Weaviate tenant to use instead of WEAVIATE_TENANT, for example demo")
     parser.add_argument("--refresh", action="store_true", help="Download the source again even if it is stored")
     parser.add_argument("--no-steps", action="store_true", help="Do not list the steps of the agent")
@@ -113,7 +126,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         runtime = build_runtime(settings, usage, tenant=args.tenant)
         try:
             ingested = runtime.ingestor.ingest(args.url, refresh=args.refresh)
-            answer = runtime.agent.ask(args.question, [ingested.url])
+            extras = [runtime.ingestor.ingest(url, refresh=args.refresh) for url in args.also]
+            answer = runtime.agent.ask(args.question, [ingested.url, *(extra.url for extra in extras)])
         finally:
             runtime.close()
     except (InvalidURLError, FetchError, ExtractionError) as error:
@@ -128,5 +142,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             text = text.replace(secret, "***")
         _say(text, error=True)
         return EXIT_SERVICE
-    _say(format_answer(ingested, answer, usage, time.monotonic() - started, show_steps=not args.no_steps))
+    seconds = time.monotonic() - started
+    _say(format_answer(ingested, answer, usage, seconds, show_steps=not args.no_steps, extras=extras))
     return EXIT_OK
