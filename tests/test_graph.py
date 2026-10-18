@@ -15,6 +15,7 @@ from chat_with_any_website_agent.graph import (
     LIMIT_REASON,
     NO_ANSWER_REASON,
     NO_EXCERPTS_REASON,
+    NOTHING_NEW_NOTE,
     STEP_LIMIT_REASON,
     AgentAnswer,
     AgentLimits,
@@ -50,18 +51,26 @@ def _chunk(index: int, text: str) -> RetrievedChunk:
     )
 
 
-class FakeStore:
-    """Returns the chunks it was given and records the questions and the sources it was asked about."""
+EXTRA_TEXT = "Pass is a null operation: nothing happens when it is executed."
+MORE_TEXT = "It is useful as a placeholder when code has to be written later."
+FIRST_SEARCH = [_chunk(0, PASS_TEXT), _chunk(1, SET_TEXT)]
+SECOND_SEARCH = [*FIRST_SEARCH, _chunk(2, EXTRA_TEXT)]  # one excerpt that the first search did not find
+THIRD_SEARCH = [*SECOND_SEARCH, _chunk(3, MORE_TEXT)]
 
-    def __init__(self, chunks: list[RetrievedChunk]) -> None:
-        self.chunks = chunks
+
+class FakeStore:
+    """Returns the chunks of each search in turn, the last ones again at the end, and records the searches."""
+
+    def __init__(self, results: list[list[RetrievedChunk]]) -> None:
+        self.results = results
         self.searches: list[tuple[str, Sequence[str] | None]] = []
 
     def search(
         self, query: str, vector: Sequence[float], limit: int, alpha: float, urls: Sequence[str] | None = None
     ) -> list[RetrievedChunk]:
+        number = len(self.searches)
         self.searches.append((query, urls))
-        return self.chunks
+        return self.results[min(number, len(self.results) - 1)]
 
 
 class FakeEmbedder:
@@ -115,8 +124,10 @@ def _setup(
     chunks: list[RetrievedChunk] | None = None,
     limits: AgentLimits = LIMITS,
     embedder: FakeEmbedder | None = None,
+    searches: list[list[RetrievedChunk]] | None = None,
 ) -> Setup:
-    store = FakeStore([_chunk(0, PASS_TEXT), _chunk(1, SET_TEXT)] if chunks is None else chunks)
+    """An agent whose searches find ``searches`` in turn, or else always ``chunks``, or else the first two chunks."""
+    store = FakeStore(searches if searches is not None else [FIRST_SEARCH if chunks is None else chunks])
     grader, answerer = ScriptedClient(*grader_replies), ScriptedClient(*answer_replies)
     retriever = SourceRetriever(store, embedder or FakeEmbedder(), FakeReranker())
     agent = SourceAgent(retriever, GroqChatModel(answerer), GroqChatModel(grader), limits)
@@ -184,7 +195,7 @@ def test_a_blank_question_is_refused() -> None:
 
 
 def test_a_search_that_finds_too_little_is_made_again_with_a_rewritten_query() -> None:
-    setup = _setup([NOT_ENOUGH, REWRITTEN, ENOUGH], [CITED_ANSWER])
+    setup = _setup([NOT_ENOUGH, REWRITTEN, ENOUGH], [CITED_ANSWER], searches=[FIRST_SEARCH, SECOND_SEARCH])
 
     result = setup.agent.ask(QUESTION)
 
@@ -192,13 +203,14 @@ def test_a_search_that_finds_too_little_is_made_again_with_a_rewritten_query() -
     assert [query for query, _ in setup.store.searches] == [QUESTION, "pass statement definition"]
     assert result.llm_calls == 4
     assert 'Rewrote the search as "pass statement definition".' in result.steps
+    assert 'Searched for "pass statement definition" and found 3 excerpt(s), 1 of them new.' in result.steps
     rewrite_request = setup.grader.requests[1][0][-1]["content"]
     assert "Previous query: " + QUESTION in rewrite_request
     assert "What was missing: no definition" in rewrite_request
 
 
 def test_a_rewrite_that_cannot_be_read_searches_with_the_question_again() -> None:
-    setup = _setup([NOT_ENOUGH, "no idea", ENOUGH], [CITED_ANSWER])
+    setup = _setup([NOT_ENOUGH, "no idea", ENOUGH], [CITED_ANSWER], searches=[FIRST_SEARCH, SECOND_SEARCH])
 
     result = setup.agent.ask(QUESTION)
 
@@ -220,7 +232,9 @@ def test_a_verdict_that_cannot_be_read_goes_on_to_the_answer_and_its_check() -> 
 
 
 def test_a_source_that_never_has_enough_ends_in_an_abstention_after_the_retries() -> None:
-    setup = _setup([NOT_ENOUGH, REWRITTEN, NOT_ENOUGH, REWRITTEN, NOT_ENOUGH])
+    setup = _setup(
+        [NOT_ENOUGH, REWRITTEN, NOT_ENOUGH, REWRITTEN, NOT_ENOUGH], searches=[FIRST_SEARCH, SECOND_SEARCH, THIRD_SEARCH]
+    )
 
     result = setup.agent.ask(QUESTION)
 
@@ -228,13 +242,51 @@ def test_a_source_that_never_has_enough_ends_in_an_abstention_after_the_retries(
         answer=NOT_COVERED_MESSAGE,
         abstained=True,
         reason="no definition",
-        excerpts=(PASS_TEXT, SET_TEXT),
+        excerpts=(PASS_TEXT, SET_TEXT, EXTRA_TEXT, MORE_TEXT),
         steps=result.steps,
         llm_calls=5,
     )
     assert len(setup.store.searches) == 3
     assert setup.answerer.requests == []
     assert result.steps[-1] == "Decided not to answer: no definition"
+
+
+def test_a_search_that_finds_nothing_new_ends_the_question_without_grading_the_same_excerpts_again() -> None:
+    setup = _setup([NOT_ENOUGH, REWRITTEN])  # the second search finds the same two excerpts as the first
+
+    result = setup.agent.ask(QUESTION)
+
+    assert result.abstained
+    assert result.reason == f"no definition. {NOTHING_NEW_NOTE}"
+    assert result.llm_calls == 2  # the first grade and the rewrite, and nothing more
+    assert len(setup.store.searches) == 2
+    assert setup.answerer.requests == []
+    assert result.steps[-2:] == (
+        'Searched for "pass statement definition" and found 2 excerpt(s), 0 of them new.',
+        f"Decided not to answer: no definition. {NOTHING_NEW_NOTE}",
+    )
+
+
+def test_a_search_that_finds_only_some_of_what_was_found_before_finds_nothing_new() -> None:
+    setup = _setup([NOT_ENOUGH, REWRITTEN], searches=[FIRST_SEARCH, [_chunk(0, PASS_TEXT)]])
+
+    result = setup.agent.ask(QUESTION)
+
+    assert result.abstained
+    assert result.reason == f"no definition. {NOTHING_NEW_NOTE}"
+    assert result.llm_calls == 2
+
+
+def test_an_excerpt_found_by_an_earlier_search_is_not_new_even_when_the_search_before_missed_it() -> None:
+    first, second, third = [_chunk(0, PASS_TEXT)], [_chunk(1, SET_TEXT)], [_chunk(0, PASS_TEXT), _chunk(1, SET_TEXT)]
+    setup = _setup([NOT_ENOUGH, REWRITTEN, NOT_ENOUGH, REWRITTEN], searches=[first, second, third])
+
+    result = setup.agent.ask(QUESTION)
+
+    assert result.abstained
+    assert len(setup.store.searches) == 3  # the second search found a new excerpt, the third only known ones
+    assert result.llm_calls == 4  # two grades and two rewrites; the third search was not graded
+    assert result.reason == f"no definition. {NOTHING_NEW_NOTE}"
 
 
 def test_a_search_that_finds_nothing_is_not_graded_by_the_model() -> None:
@@ -248,15 +300,15 @@ def test_a_search_that_finds_nothing_is_not_graded_by_the_model() -> None:
     assert setup.grader.requests == []
 
 
-def test_a_search_that_keeps_finding_nothing_is_retried_until_the_retries_are_used() -> None:
-    setup = _setup([REWRITTEN, REWRITTEN], chunks=[])
+def test_a_search_that_finds_nothing_twice_ends_the_question_after_one_retry() -> None:
+    setup = _setup([REWRITTEN], chunks=[])
 
     result = setup.agent.ask(QUESTION)
 
     assert result.abstained
-    assert result.reason == NO_EXCERPTS_REASON
-    assert result.llm_calls == 2
-    assert len(setup.store.searches) == 3
+    assert result.reason == f"{NO_EXCERPTS_REASON} {NOTHING_NEW_NOTE}"
+    assert result.llm_calls == 1  # only the rewrite: nothing was found, so nothing was graded
+    assert len(setup.store.searches) == 2
 
 
 @pytest.mark.parametrize("reply", ["NOT_COVERED", "not_covered.", "**NOT_COVERED**", '"NOT_COVERED"\n'])
@@ -366,7 +418,11 @@ def test_no_correction_is_asked_when_it_cannot_finish_within_the_step_limit() ->
 
 def test_the_defaults_are_enough_for_the_longest_path_without_reaching_the_step_limit() -> None:
     # Two rewrites, a model that has an answer without a citation, and then the abstention: the longest path.
-    setup = _setup([NOT_ENOUGH, REWRITTEN, NOT_ENOUGH, REWRITTEN, ENOUGH], ["The pass statement does nothing."])
+    setup = _setup(
+        [NOT_ENOUGH, REWRITTEN, NOT_ENOUGH, REWRITTEN, ENOUGH],
+        ["The pass statement does nothing."],
+        searches=[FIRST_SEARCH, SECOND_SEARCH, THIRD_SEARCH],
+    )
 
     result = setup.agent.ask(QUESTION)
 

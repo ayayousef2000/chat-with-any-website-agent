@@ -4,7 +4,8 @@ An answer has checked citations. When the source does not cover the question, th
 The nodes run in this order:
 
 1. ``analyze`` tidies the question.
-2. ``retrieve`` searches the source and keeps the best excerpts.
+2. ``retrieve`` searches the source and keeps the best excerpts. After a rewrite, a search that finds only excerpts
+   that were found before ends the question in ``abstain``: the same excerpts would get the same grade.
 3. ``grade`` asks a model whether the excerpts are enough. If they are, ``generate`` writes the answer. If they are
    not and a retry fits in the limits, ``rewrite`` makes a better query and the graph goes back to ``retrieve``.
    Otherwise the graph goes to ``abstain``.
@@ -46,6 +47,7 @@ from chat_with_any_website_agent.state import AgentState, new_state
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from langchain_core.documents import Document
     from langchain_core.language_models.chat_models import BaseChatModel
 
     from chat_with_any_website_agent.config import Settings
@@ -73,6 +75,7 @@ NO_ANSWER_REASON = "The model found no answer in the excerpts."
 LIMIT_REASON = "A limit of steps or model calls was reached before the question could be answered."
 STEP_LIMIT_REASON = "The limit of steps was reached."
 UNREADABLE_GRADE_REASON = "The verdict on the excerpts could not be read."
+NOTHING_NEW_NOTE = "A new search found nothing new."
 
 type Route = Literal["generate", "rewrite", "abstain"]
 
@@ -244,7 +247,7 @@ class SourceAgent:
         graph.add_node("abstain", self._abstain)
         graph.add_edge(START, "analyze")
         graph.add_edge("analyze", "retrieve")
-        graph.add_edge("retrieve", "grade")
+        graph.add_conditional_edges("retrieve", _after_retrieve, {"grade": "grade", "abstain": "abstain"})
         graph.add_conditional_edges(
             "grade", self._after_grade, {"generate": "generate", "rewrite": "rewrite", "abstain": "abstain"}
         )
@@ -264,8 +267,21 @@ class SourceAgent:
     def _retrieve(self, state: AgentState) -> AgentState:
         retriever = self._retriever.model_copy(update={"urls": state["urls"]})
         documents = retriever.invoke(state["query"])
-        found = f"found {len(documents)} excerpt(s)"
-        return {"documents": documents, "steps": [f'Searched for "{state["query"]}" and {found}.']}
+        seen = state.get("seen", [])
+        fresh = [key for key in dict.fromkeys(_excerpt_key(document) for document in documents) if key not in seen]
+        retry = state["rewrites"] > 0
+        found = f"found {len(documents)} excerpt(s)" + (f", {len(fresh)} of them new" if retry else "")
+        result: AgentState = {
+            "documents": documents,
+            "seen": [*seen, *fresh],
+            "fresh": len(fresh),
+            "steps": [f'Searched for "{state["query"]}" and {found}.'],
+        }
+        if retry and not fresh:
+            # The same excerpts would get the same grade, so the question is not graded again.
+            previous = state["grade"].reason or NOT_ENOUGH_REASON
+            result["reason"] = f"{previous.rstrip('. ')}. {NOTHING_NEW_NOTE}"
+        return result
 
     def _grade(self, state: AgentState) -> AgentState:
         documents = state["documents"]
@@ -349,6 +365,16 @@ class SourceAgent:
             "reason": reason,
             "steps": [f"Decided not to answer: {reason}"],
         }
+
+
+def _excerpt_key(document: Document) -> str:
+    """What identifies an excerpt: its source and its place in the source."""
+    return f"{document.metadata.get('url', '')}#{document.metadata.get('chunk_index', '')}"
+
+
+def _after_retrieve(state: AgentState) -> Literal["grade", "abstain"]:
+    """After a rewrite, a search that found nothing new ends the question: more grading cannot change the verdict."""
+    return "abstain" if state["rewrites"] > 0 and state.get("fresh", 1) == 0 else "grade"
 
 
 def _written(state: AgentState, answer: str, step: str) -> AgentState:

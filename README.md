@@ -19,7 +19,7 @@ question → analyze → retrieve → grade ─ enough ─→ generate → verif
 
 - **Retrieve.** A hybrid search (keywords and vectors) in Weaviate, then a Cohere rerank keeps the best few excerpts.
 - **Grade.** A small model decides whether the excerpts are enough to answer, and says what is missing when they are not.
-- **Rewrite and retry.** When the evidence is weak, the query is rewritten and searched again, within a limit.
+- **Rewrite and retry.** When the evidence is weak, the query is rewritten and searched again, within a limit. A new search that finds nothing the agent has not already seen ends the question, because the same excerpts would get the same grade.
 - **Generate and verify.** A larger model writes the answer and cites the excerpts as `[1]`, `[2]`. Plain code then checks that every cited excerpt exists and that each cited sentence shares its content words with it. A rejected answer is corrected once.
 - **Abstain.** When the source does not cover the question, the answer says so and gives the reason.
 
