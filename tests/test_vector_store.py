@@ -14,6 +14,7 @@ from weaviate.classes.query import Filter, HybridFusion
 from weaviate.exceptions import UnexpectedStatusCodeError, WeaviateConnectionError
 
 from chat_with_any_website_agent.errors import ServiceBusyError, StoreError
+from chat_with_any_website_agent.links import Link
 from chat_with_any_website_agent.retrying import Retrier
 from chat_with_any_website_agent.vector_store import (
     AGE_PROPERTY,
@@ -21,6 +22,7 @@ from chat_with_any_website_agent.vector_store import (
     HASH_PROPERTY,
     INSERT_BATCH_SIZE,
     LAST_MODIFIED_PROPERTY,
+    LINKS_PROPERTY,
     NOT_MULTI_TENANT_MESSAGE,
     VERSION_PROPERTIES,
     WEAVIATE_RETRYABLE,
@@ -139,9 +141,10 @@ def test_a_new_collection_is_created_with_multi_tenancy_and_the_tenant_is_made()
         "etag",  # the marks of the version of the page, and a fingerprint of its text, to notice a change
         "last_modified",
         "content_hash",
+        "links",  # the links of the page that may be followed
     ]
-    kinds = [prop.dataType for prop in created["properties"][-4:]]
-    assert kinds == [DataType.DATE, DataType.TEXT, DataType.TEXT, DataType.TEXT]
+    kinds = [prop.dataType for prop in created["properties"][-5:]]
+    assert kinds == [DataType.DATE, DataType.TEXT, DataType.TEXT, DataType.TEXT, DataType.TEXT]
     assert collections.new_collection.tenants.created == ["development"]
     assert opened == "collection-for-development"  # every read and write goes through the tenant
 
@@ -259,33 +262,40 @@ def _connect_to(monkeypatch: pytest.MonkeyPatch, collections: FakeCollections) -
     return WeaviateStore.connect("https://cluster.example", SecretStr("secret"), "Chunks", "development")
 
 
-def test_a_store_over_a_collection_with_all_the_fields_keeps_ages_and_versions(
+def test_a_store_over_a_collection_with_all_the_fields_keeps_ages_versions_and_links(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    collections = FakeCollections({"Chunks": FakeCollection(properties=["url", AGE_PROPERTY, *VERSION_PROPERTIES])})
+    fields = ["url", AGE_PROPERTY, *VERSION_PROPERTIES, LINKS_PROPERTY]
+    collections = FakeCollections({"Chunks": FakeCollection(properties=fields)})
 
     with caplog.at_level(logging.WARNING, logger="chat_with_any_website_agent.vector_store"):
         store = _connect_to(monkeypatch, collections)
 
-    assert (store.keeps_loaded_at, store.keeps_versions) == (True, True)
+    assert (store.keeps_loaded_at, store.keeps_versions, store.keeps_links) == (True, True, True)
     assert caplog.text == ""  # nothing is missing, so there is nothing to warn about
 
 
 @pytest.mark.parametrize(
     ("properties", "kept", "missing"),
     [
-        (["url", "text"], (False, False), "loaded_at, etag, last_modified, content_hash"),
-        (["url", AGE_PROPERTY], (True, False), "etag, last_modified, content_hash"),
-        (["url", *VERSION_PROPERTIES], (False, True), "loaded_at"),
+        (["url", "text"], (False, False, False), "loaded_at, etag, last_modified, content_hash, links"),
+        (["url", AGE_PROPERTY], (True, False, False), "etag, last_modified, content_hash, links"),
+        (["url", *VERSION_PROPERTIES, LINKS_PROPERTY], (False, True, True), "loaded_at"),
         # the versions are kept only when all three fields are there
-        (["url", AGE_PROPERTY, ETAG_PROPERTY, HASH_PROPERTY], (True, False), "last_modified"),
+        (
+            ["url", AGE_PROPERTY, ETAG_PROPERTY, HASH_PROPERTY, LINKS_PROPERTY],
+            (True, False, True),
+            "last_modified",
+        ),
+        # a collection made before the links were kept
+        (["url", AGE_PROPERTY, *VERSION_PROPERTIES], (True, True, False), "links"),
     ],
 )
 def test_a_store_over_a_collection_that_lacks_fields_says_which_and_how_to_add_them(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
     properties: list[str],
-    kept: tuple[bool, bool],
+    kept: tuple[bool, bool, bool],
     missing: str,
 ) -> None:
     collections = FakeCollections({"Chunks": FakeCollection(properties=properties)})
@@ -293,7 +303,7 @@ def test_a_store_over_a_collection_that_lacks_fields_says_which_and_how_to_add_t
     with caplog.at_level(logging.WARNING, logger="chat_with_any_website_agent.vector_store"):
         store = _connect_to(monkeypatch, collections)
 
-    assert (store.keeps_loaded_at, store.keeps_versions) == kept
+    assert (store.keeps_loaded_at, store.keeps_versions, store.keeps_links) == kept
     assert f"has no field {missing}," in caplog.text
     assert "Run 'agent-smoke --prepare' once to add them." in caplog.text
     assert collections.existing["Chunks"].added == []  # connecting never changes the collection
@@ -365,14 +375,23 @@ class FakeTenantCollection:
 
 
 def _store(
-    client: FakeClient | None = None, *, keeps_loaded_at: bool = False, keeps_versions: bool = False
+    client: FakeClient | None = None,
+    *,
+    keeps_loaded_at: bool = False,
+    keeps_versions: bool = False,
+    keeps_links: bool = False,
 ) -> tuple[WeaviateStore, FakeTenantCollection, list[float]]:
     pauses: list[float] = []
     retrier = Retrier(WEAVIATE_RETRYABLE, sleep=pauses.append, jitter=lambda _: 0.0)
     collection = FakeTenantCollection()
     fake: Any = collection
     store = WeaviateStore(
-        fake, client=client, retrier=retrier, keeps_loaded_at=keeps_loaded_at, keeps_versions=keeps_versions
+        fake,
+        client=client,
+        retrier=retrier,
+        keeps_loaded_at=keeps_loaded_at,
+        keeps_versions=keeps_versions,
+        keeps_links=keeps_links,
     )
     return store, collection, pauses
 
@@ -453,6 +472,12 @@ SOURCE = "https://a.example/"
 MODIFIED = "Wed, 21 Oct 2026 07:28:00 GMT"
 MARKS = SourceRecord(loaded_at=LOADED, etag='"v1"', last_modified=MODIFIED, content_hash="abc123")
 CHUNK = StoredChunk("a", "", [0.0])
+# Weaviate's AND filter has no equality of its own, so the tests compare its parts.
+FIRST_CHUNK_OF_SOURCE: Any = Filter.all_of(
+    [Filter.by_property("url").equal(SOURCE), Filter.by_property("chunk_index").equal(0)]
+)
+LINKS = (Link("https://a.example/about", "About us"), Link("https://a.example/pricing", ""))
+LINKS_JSON = '[["https://a.example/about","About us"],["https://a.example/pricing",""]]'
 
 
 def test_a_source_is_stored_with_the_time_it_was_loaded_when_the_collection_keeps_ages() -> None:
@@ -517,6 +542,55 @@ def test_the_version_is_not_written_when_only_the_age_field_exists() -> None:
     assert not set(VERSION_PROPERTIES) & set(properties)
 
 
+def test_the_links_of_a_page_are_stored_on_its_first_chunk_only() -> None:
+    store, collection, _ = _store(keeps_links=True)
+    chunks = [StoredChunk("a", "", [0.0]), StoredChunk("b", "", [0.0])]
+
+    store.replace_source(SOURCE, "Page A", chunks, SourceRecord(links=LINKS))
+
+    first, second = collection.data.inserted[0]
+    assert first.properties[LINKS_PROPERTY] == LINKS_JSON
+    assert LINKS_PROPERTY not in second.properties
+
+
+def test_a_page_without_links_stores_no_links_field() -> None:
+    store, collection, _ = _store(keeps_links=True)
+
+    store.replace_source(SOURCE, "Page A", [CHUNK], SourceRecord())
+
+    assert LINKS_PROPERTY not in collection.data.inserted[0][0].properties
+
+
+def test_links_are_not_written_when_the_collection_lacks_the_field() -> None:
+    store, collection, _ = _store()  # a collection made before the links were kept
+
+    store.replace_source(SOURCE, "Page A", [CHUNK], SourceRecord(links=LINKS))
+
+    assert LINKS_PROPERTY not in collection.data.inserted[0][0].properties
+
+
+def test_the_links_of_a_page_are_read_back_from_its_first_chunk() -> None:
+    store, collection, _ = _store(keeps_links=True)
+    collection.query.objects = [SimpleNamespace(properties={LINKS_PROPERTY: LINKS_JSON})]
+
+    record = store.source_record(SOURCE)
+
+    assert record is not None
+    assert record.links == LINKS
+    assert collection.query.fetch_calls[0]["filters"].filters == FIRST_CHUNK_OF_SOURCE.filters
+
+
+@pytest.mark.parametrize("stored", [None, "", "not json", '{"a": 1}', "[1, 2]"])
+def test_links_that_are_missing_or_unreadable_are_no_links(stored: object) -> None:
+    store, collection, _ = _store(keeps_links=True)
+    collection.query.objects = [SimpleNamespace(properties={LINKS_PROPERTY: stored})]
+
+    record = store.source_record(SOURCE)
+
+    assert record is not None
+    assert record.links == ()
+
+
 def test_the_record_of_a_source_is_read_from_one_of_its_chunks() -> None:
     store, collection, _ = _store(keeps_loaded_at=True, keeps_versions=True)
     collection.query.objects = [
@@ -531,13 +605,9 @@ def test_the_record_of_a_source_is_read_from_one_of_its_chunks() -> None:
     ]
 
     assert store.source_record(SOURCE) == MARKS
-    assert collection.query.fetch_calls == [
-        {
-            "filters": Filter.by_property("url").equal(SOURCE),
-            "limit": 1,
-            "return_properties": [AGE_PROPERTY, *VERSION_PROPERTIES],
-        }
-    ]
+    [call] = collection.query.fetch_calls
+    assert call["filters"].filters == FIRST_CHUNK_OF_SOURCE.filters  # an AND of the address and the first chunk
+    assert (call["limit"], call["return_properties"]) == (1, [AGE_PROPERTY, *VERSION_PROPERTIES])
 
 
 @pytest.mark.parametrize(
@@ -585,18 +655,21 @@ def test_the_record_of_a_source_that_is_not_stored_is_none() -> None:
 
 
 @pytest.mark.parametrize(
-    ("keeps_loaded_at", "keeps_versions", "asked"),
+    ("keeps_loaded_at", "keeps_versions", "keeps_links", "asked"),
     [
-        (True, True, [AGE_PROPERTY, *VERSION_PROPERTIES]),
-        (True, False, [AGE_PROPERTY]),
-        (False, True, list(VERSION_PROPERTIES)),
-        (False, False, []),
+        (True, True, True, [AGE_PROPERTY, *VERSION_PROPERTIES, LINKS_PROPERTY]),
+        (True, False, False, [AGE_PROPERTY]),
+        (False, True, False, list(VERSION_PROPERTIES)),
+        (False, False, True, [LINKS_PROPERTY]),
+        (False, False, False, []),
     ],
 )
 def test_only_the_fields_that_the_collection_has_are_asked_for(
-    keeps_loaded_at: bool, keeps_versions: bool, asked: list[str]
+    keeps_loaded_at: bool, keeps_versions: bool, keeps_links: bool, asked: list[str]
 ) -> None:
-    store, collection, _ = _store(keeps_loaded_at=keeps_loaded_at, keeps_versions=keeps_versions)
+    store, collection, _ = _store(
+        keeps_loaded_at=keeps_loaded_at, keeps_versions=keeps_versions, keeps_links=keeps_links
+    )
     collection.query.objects = [SimpleNamespace(properties={})]
 
     store.source_record(SOURCE)
@@ -609,26 +682,28 @@ def test_the_fields_are_added_to_a_collection_that_lacks_them() -> None:
 
     added = ensure_record_properties(collection)
 
-    assert added == [AGE_PROPERTY, *VERSION_PROPERTIES]
+    assert added == [AGE_PROPERTY, *VERSION_PROPERTIES, LINKS_PROPERTY]
     types = {prop.name: prop.dataType for prop in collection.added}
     assert types == {
         AGE_PROPERTY: DataType.DATE,
         ETAG_PROPERTY: DataType.TEXT,
         LAST_MODIFIED_PROPERTY: DataType.TEXT,
         HASH_PROPERTY: DataType.TEXT,
+        LINKS_PROPERTY: DataType.TEXT,
     }
-    assert property_names(collection) == {"url", "text", AGE_PROPERTY, *VERSION_PROPERTIES}
+    assert property_names(collection) == {"url", "text", AGE_PROPERTY, *VERSION_PROPERTIES, LINKS_PROPERTY}
 
 
 def test_only_the_missing_fields_are_added() -> None:
     collection = FakeCollection(properties=["url", AGE_PROPERTY])  # upgraded before the version fields existed
+    expected = [*VERSION_PROPERTIES, LINKS_PROPERTY]
 
-    assert ensure_record_properties(collection) == list(VERSION_PROPERTIES)
-    assert [prop.name for prop in collection.added] == list(VERSION_PROPERTIES)
+    assert ensure_record_properties(collection) == expected
+    assert [prop.name for prop in collection.added] == expected
 
 
 def test_nothing_is_added_when_the_collection_has_all_the_fields() -> None:
-    collection = FakeCollection(properties=["url", AGE_PROPERTY, *VERSION_PROPERTIES])
+    collection = FakeCollection(properties=["url", AGE_PROPERTY, *VERSION_PROPERTIES, LINKS_PROPERTY])
 
     assert ensure_record_properties(collection) == []
     assert collection.added == []

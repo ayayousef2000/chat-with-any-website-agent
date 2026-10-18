@@ -323,6 +323,7 @@ class SourceIngestor:
             etag=prepared.validators.etag,
             last_modified=prepared.validators.last_modified,
             content_hash=prepared.fingerprint,
+            links=prepared.page.links,
         )
         self._store.replace_source(
             url,

@@ -81,7 +81,9 @@ class FakeCollection:
         properties: list[str] | None = None,
     ) -> None:
         self.properties = (
-            ["url", "loaded_at", "etag", "last_modified", "content_hash"] if properties is None else list(properties)
+            ["url", "loaded_at", "etag", "last_modified", "content_hash", "links"]
+            if properties is None
+            else list(properties)
         )
         self.added: list[Any] = []
         self.config = SimpleNamespace(
@@ -198,7 +200,7 @@ def test_a_collection_with_all_the_fields_is_reported_as_keeping_the_version_of_
     checks = check_weaviate(client, "WebsiteChunk", "development", prepare=True)
 
     assert _by_name(checks)["source versions"].detail == (
-        "the collection keeps when a source was loaded and which version of the page it is"
+        "the collection keeps when a source was loaded, which version of the page it is and its links"
     )
     assert collection.added == []  # they were all there already
 
@@ -209,10 +211,10 @@ def test_prepare_adds_the_fields_to_a_collection_that_was_made_without_them() ->
 
     checks = check_weaviate(client, "WebsiteChunk", "development", prepare=True)
 
-    assert [prop.name for prop in collection.added] == ["loaded_at", "etag", "last_modified", "content_hash"]
+    assert [prop.name for prop in collection.added] == ["loaded_at", "etag", "last_modified", "content_hash", "links"]
     assert _by_name(checks)["source versions"].detail == (
-        "the collection keeps when a source was loaded and which version of the page it is; "
-        "added now: loaded_at, etag, last_modified, content_hash"
+        "the collection keeps when a source was loaded, which version of the page it is and its links; "
+        "added now: loaded_at, etag, last_modified, content_hash, links"
     )
     assert all(check.ok for check in checks)
 
@@ -223,8 +225,8 @@ def test_prepare_adds_only_the_fields_that_are_missing() -> None:
 
     checks = check_weaviate(client, "WebsiteChunk", "development", prepare=True)
 
-    assert [prop.name for prop in collection.added] == ["etag", "last_modified", "content_hash"]
-    assert _by_name(checks)["source versions"].detail.endswith("added now: etag, last_modified, content_hash")
+    assert [prop.name for prop in collection.added] == ["etag", "last_modified", "content_hash", "links"]
+    assert _by_name(checks)["source versions"].detail.endswith("added now: etag, last_modified, content_hash, links")
 
 
 def test_without_prepare_missing_fields_are_reported_and_nothing_is_added() -> None:
@@ -234,8 +236,8 @@ def test_without_prepare_missing_fields_are_reported_and_nothing_is_added() -> N
     checks = check_weaviate(client, "WebsiteChunk", "development", prepare=False)
 
     detail = _by_name(checks)["source versions"].detail
-    assert "the fields loaded_at, etag, last_modified, content_hash are missing" in detail
-    assert "a page that changed is not noticed" in detail
+    assert "the fields loaded_at, etag, last_modified, content_hash, links are missing" in detail
+    assert "a page that changed is not noticed and no link is followed" in detail
     assert "run with --prepare" in detail
     assert _by_name(checks)["source versions"].ok  # an older collection still works, only changes are not noticed
     assert collection.added == []
@@ -420,8 +422,8 @@ def test_the_plan_says_what_prepare_would_create_and_leaves_out_unchosen_service
 
     assert "create WebsiteChunk and the tenants development, eval, demo" in plan
     assert (
-        "add the fields loaded_at, etag, last_modified, content_hash (when a source was loaded and which version of "
-        "the page it is) if the collection lacks them"
+        "add the fields loaded_at, etag, last_modified, content_hash, links (when a source was loaded, which version "
+        "of the page it is and its links) if the collection lacks them"
     ) in plan
     assert "Cohere" not in plan
     assert "Groq" not in plan

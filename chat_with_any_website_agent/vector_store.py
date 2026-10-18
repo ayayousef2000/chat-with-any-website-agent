@@ -19,6 +19,7 @@ from weaviate.classes.query import Filter, HybridFusion, MetadataQuery
 from weaviate.exceptions import UnexpectedStatusCodeError, WeaviateConnectionError, WeaviateTimeoutError
 
 from chat_with_any_website_agent.errors import StoreError
+from chat_with_any_website_agent.links import Link, links_from_json, links_to_json
 from chat_with_any_website_agent.retrying import Retrier
 
 if TYPE_CHECKING:
@@ -46,6 +47,9 @@ ETAG_PROPERTY = "etag"
 LAST_MODIFIED_PROPERTY = "last_modified"
 HASH_PROPERTY = "content_hash"
 VERSION_PROPERTIES = (ETAG_PROPERTY, LAST_MODIFIED_PROPERTY, HASH_PROPERTY)
+# The links of the page that may be followed, as a short JSON text. They are kept on the first chunk of the page only.
+LINKS_PROPERTY = "links"
+FIRST_CHUNK = 0
 
 logger = logging.getLogger(__name__)
 
@@ -59,12 +63,14 @@ class SourceRecord:
         etag: The ``ETag`` that the website gave with the page.
         last_modified: The ``Last-Modified`` date that the website gave with the page.
         content_hash: A fingerprint of the cleaned text of the page, to tell whether the text changed.
+        links: The links of the page that may be followed, in the order of the page.
     """
 
     loaded_at: datetime | None = None
     etag: str | None = None
     last_modified: str | None = None
     content_hash: str | None = None
+    links: tuple[Link, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -138,7 +144,10 @@ def _record_properties() -> list[Property]:
     """The fields that describe the copy of a source. They are not searched, only read."""
     return [
         Property(name=AGE_PROPERTY, data_type=DataType.DATE),
-        *(Property(name=name, data_type=DataType.TEXT, index_searchable=False) for name in VERSION_PROPERTIES),
+        *(
+            Property(name=name, data_type=DataType.TEXT, index_searchable=False)
+            for name in (*VERSION_PROPERTIES, LINKS_PROPERTY)
+        ),
     ]
 
 
@@ -227,6 +236,7 @@ class WeaviateStore:
         retrier: Retrier | None = None,
         keeps_loaded_at: bool = False,
         keeps_versions: bool = False,
+        keeps_links: bool = False,
     ) -> None:
         """Create a store over a collection that is already bound to a tenant.
 
@@ -238,12 +248,20 @@ class WeaviateStore:
                 not, nothing is written to that field and the age of a source is not known.
             keeps_versions: Whether the collection has the fields that say which version of a page a copy is. When it
                 does not, nothing is written to them and a changed page cannot be noticed.
+            keeps_links: Whether the collection has the field for the links of a page. When it does not, the links
+                are not kept and the agent cannot follow them.
         """
         self._collection = collection
         self._client = client
         self._retrier = retrier or Retrier(retryable=WEAVIATE_RETRYABLE)
         self._keeps_loaded_at = keeps_loaded_at
         self._keeps_versions = keeps_versions
+        self._keeps_links = keeps_links
+
+    @property
+    def keeps_links(self) -> bool:
+        """Whether the collection keeps the links of each page."""
+        return self._keeps_links
 
     @property
     def keeps_loaded_at(self) -> bool:
@@ -297,8 +315,9 @@ class WeaviateStore:
         missing = [prop.name for prop in _record_properties() if prop.name not in names]
         if missing:
             logger.warning(
-                "The collection %s has no field %s, so the age and the version of the stored sources are not "
-                "known and a page that changed is not noticed. Run 'agent-smoke --prepare' once to add them.",
+                "The collection %s has no field %s, so the age, the version and the links of the stored sources are "
+                "not known (a page that changed is not noticed and no link is followed). "
+                "Run 'agent-smoke --prepare' once to add them.",
                 collection_name,
                 ", ".join(missing),
             )
@@ -308,6 +327,7 @@ class WeaviateStore:
             retrier=retrier,
             keeps_loaded_at=AGE_PROPERTY in names,
             keeps_versions=all(name in names for name in VERSION_PROPERTIES),
+            keeps_links=LINKS_PROPERTY in names,
         )
 
     def __enter__(self) -> Self:
@@ -328,13 +348,15 @@ class WeaviateStore:
             title: The title of the source.
             chunks: The chunks with their embeddings, in reading order.
             record: What is kept about this copy of the source. The time it was loaded is now when it is not given.
-                A field is only written when the collection has it.
+                A field is only written when the collection has it. The links are kept on the first chunk only.
 
         Raises:
             StoreError: If Weaviate refuses to store some of the chunks.
             ServiceBusyError: If Weaviate cannot be reached after the retries.
         """
-        age = self._record_values(record or SourceRecord())
+        record = record or SourceRecord()
+        age = self._record_values(record)
+        links = {LINKS_PROPERTY: links_to_json(record.links)} if self._keeps_links and record.links else {}
         objects = [
             DataObject(
                 properties={
@@ -344,6 +366,7 @@ class WeaviateStore:
                     "chunk_index": index,
                     "text": chunk.text,
                     **age,
+                    **(links if index == FIRST_CHUNK else {}),
                 },
                 vector=list(chunk.vector),
             )
@@ -428,9 +451,11 @@ class WeaviateStore:
         names = [
             *([AGE_PROPERTY] if self._keeps_loaded_at else []),
             *(VERSION_PROPERTIES if self._keeps_versions else []),
+            *([LINKS_PROPERTY] if self._keeps_links else []),
         ]
+        first_chunk = Filter.all_of([_url_filter(url), Filter.by_property("chunk_index").equal(FIRST_CHUNK)])
         response = self._retrier.call(
-            lambda: self._collection.query.fetch_objects(filters=_url_filter(url), limit=1, return_properties=names),
+            lambda: self._collection.query.fetch_objects(filters=first_chunk, limit=1, return_properties=names),
             name="Weaviate",
         )
         if not response.objects:
@@ -441,6 +466,7 @@ class WeaviateStore:
             etag=_as_text(found.get(ETAG_PROPERTY)),
             last_modified=_as_text(found.get(LAST_MODIFIED_PROPERTY)),
             content_hash=_as_text(found.get(HASH_PROPERTY)),
+            links=links_from_json(_as_text(found.get(LINKS_PROPERTY))),
         )
 
     def search(
