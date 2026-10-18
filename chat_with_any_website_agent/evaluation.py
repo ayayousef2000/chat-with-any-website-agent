@@ -33,6 +33,9 @@ DEFAULT_CATEGORY = "single_page"
 DEFAULT_LANGUAGE = "en"
 NOT_ANSWERABLE = "NOT ANSWERABLE FROM THE SOURCES"
 
+# A judge that gives an empty or unreadable reply is asked once more before the question is left unscored.
+JUDGE_ATTEMPTS = 2
+
 JUDGE_PROMPT = """You are a strict evaluator of a question-answering system that must answer only from the excerpts
 of its sources.
 Reply with a JSON object: {"faithful": true|false|null, "correct": true|false, "reason": "<one sentence>"}.
@@ -315,7 +318,7 @@ def judge_answer(judge: ChatClient, case: Case, outcome: Outcome) -> Verdict | N
         outcome: What the system answered.
 
     Returns:
-        The verdict, or ``None`` when the judge's reply could not be read.
+        The verdict, or ``None`` when the judge's reply could not be read, even after asking again once.
     """
     reference = case.reference if case.answerable else NOT_ANSWERABLE
     excerpts = "\n\n".join(f"[{number}] {text}" for number, text in enumerate(outcome.excerpts, start=1))
@@ -323,12 +326,13 @@ def judge_answer(judge: ChatClient, case: Case, outcome: Outcome) -> Verdict | N
         f"Question: {case.question}\n\nReference answer: {reference}\n\n"
         f"Retrieved excerpts:\n{excerpts or '(none)'}\n\nSystem answer: {outcome.answer}"
     )
-    reply = judge.complete(
-        [{"role": "system", "content": JUDGE_PROMPT}, {"role": "user", "content": user_message}],
-        response_format={"type": "json_object"},
-        temperature=0,
-    )
-    return parse_verdict(reply.text)
+    messages = [{"role": "system", "content": JUDGE_PROMPT}, {"role": "user", "content": user_message}]
+    for _ in range(JUDGE_ATTEMPTS):
+        reply = judge.complete(messages, response_format={"type": "json_object"}, temperature=0)
+        verdict = parse_verdict(reply.text)
+        if verdict is not None:
+            return verdict
+    return None
 
 
 # --- running ---

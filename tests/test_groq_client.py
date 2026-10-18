@@ -126,6 +126,44 @@ def test_a_reply_without_usage_information_counts_no_tokens() -> None:
     assert client.complete(MESSAGES).total_tokens == 0
 
 
+def _bad_request(body: object) -> groq.BadRequestError:
+    return groq.BadRequestError("bad request", response=httpx.Response(400, request=_REQUEST), body=body)
+
+
+def test_a_reply_that_groq_refuses_as_invalid_json_is_handed_on_as_the_text_it_was() -> None:
+    keys = Keys()
+    keys.failures.append(_bad_request({"error": {"code": "json_validate_failed", "failed_generation": '  {"a": 1  '}}))
+    usage = UsageCounter()
+    client, _ = _client(keys, usage=usage)
+
+    reply = client.complete(MESSAGES, response_format={"type": "json_object"})
+
+    assert reply == ChatReply(text='{"a": 1', prompt_tokens=0, completion_tokens=0, key_number=1)
+    assert keys.used == [0]  # it is not asked again: the caller decides what to do with an unreadable reply
+    assert usage.calls == {GROQ: 1}
+
+
+def test_an_empty_reply_that_groq_refuses_as_invalid_json_is_an_empty_text() -> None:
+    keys = Keys()
+    keys.failures.append(_bad_request({"error": {"code": "json_validate_failed", "failed_generation": ""}}))
+    client, _ = _client(keys)
+
+    assert client.complete(MESSAGES).text == ""
+
+
+@pytest.mark.parametrize(
+    "body",
+    [{"error": {"code": "model_not_found"}}, {"error": "a text"}, "plain text", None],
+)
+def test_any_other_bad_request_is_still_an_error(body: object) -> None:
+    keys = Keys()
+    keys.failures.append(_bad_request(body))
+    client, _ = _client(keys)
+
+    with pytest.raises(groq.BadRequestError):
+        client.complete(MESSAGES)
+
+
 def test_a_patient_retrier_waits_for_a_limit_to_lift_longer_than_the_default() -> None:
     retrier = patient_retrier()
 
