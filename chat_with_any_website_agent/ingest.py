@@ -25,6 +25,7 @@ from chat_with_any_website_agent.fetching import (
     fetch_if_changed,
     normalize_url,
 )
+from chat_with_any_website_agent.links import site_of
 from chat_with_any_website_agent.pdf import extract_pdf
 from chat_with_any_website_agent.vector_store import SourceRecord, StoredChunk
 
@@ -42,6 +43,8 @@ DEFAULT_CHUNK_OVERLAP = 300
 # What can go wrong with a source without anything being wrong with the services. When the page of a stored source
 # cannot be checked for one of these reasons, the stored copy is used.
 SOURCE_ERRORS = (InvalidURLError, FetchError, ExtractionError)
+
+OFF_SITE_MESSAGE = "That page moved to another website, so it was not used."
 
 
 class SourceStore(Protocol):
@@ -223,7 +226,7 @@ class SourceIngestor:
             check_interval=timedelta(seconds=settings.source_check_seconds),
         )
 
-    def ingest(self, url: str, *, refresh: bool = False, check: bool = True) -> IngestResult:
+    def ingest(self, url: str, *, refresh: bool = False, check: bool = True, site: str | None = None) -> IngestResult:
         """Make a source ready for questions, with the page as it is now.
 
         A stored copy is checked first: the website is asked whether the page changed since the copy was made. If it
@@ -236,6 +239,8 @@ class SourceIngestor:
             url: The address of a web page or PDF file.
             refresh: Download the source again even when it is already stored and has not changed.
             check: Ask the website whether a stored page changed. When ``False`` a stored copy is used as it is.
+            site: The site the page must stay on, as ``site_of`` writes it. A page that a download ends on at another
+                site, because of a redirect, is refused. ``None`` allows any site.
 
         Returns:
             What happened: the stored copy was reused (with its age when it is known, and whether the page was
@@ -243,7 +248,7 @@ class SourceIngestor:
 
         Raises:
             InvalidURLError: If the address is invalid or not public.
-            FetchError: If the source cannot be downloaded.
+            FetchError: If the source cannot be downloaded, or ends at another site than ``site``.
             ExtractionError: If it has no readable text.
             ServiceBusyError: If Cohere or Weaviate keeps failing after the retries.
             BudgetExceededError: If the run's limit of Cohere calls is reached.
@@ -260,14 +265,14 @@ class SourceIngestor:
             elif (revalidate := self._revalidate_fetch) is None or not self._should_check(url, check):
                 return IngestResult(url=url, reused=True, age=age)
             else:
-                outcome = self._revalidate(revalidate, url, record, age)
+                outcome = self._revalidate(revalidate, url, record, age, site)
                 if isinstance(outcome, IngestResult):
                     return outcome
                 prepared = outcome
                 changed = record.content_hash is not None
                 expired = not changed  # a copy with no fingerprint is loaded again once, to learn its version
         if prepared is None:
-            prepared = self._prepare(self._fetch(url))
+            prepared = self._prepare(self._fetch(url), site)
         return self._store_prepared(url, prepared, expired=expired, changed=changed)
 
     def _revalidate(
@@ -276,6 +281,7 @@ class SourceIngestor:
         url: str,
         record: SourceRecord,
         age: timedelta | None,
+        site: str | None,
     ) -> IngestResult | _Prepared:
         """Ask the website whether the page changed; give the stored copy back when it did not or cannot be asked.
 
@@ -289,7 +295,7 @@ class SourceIngestor:
             self._checked[url] = self._now()
             if document is None:
                 return IngestResult(url=url, reused=True, age=age, checked=True)
-            prepared = self._prepare(document)
+            prepared = self._prepare(document, site)
         except SOURCE_ERRORS as error:
             logger.warning("The page of a stored source on %s could not be checked: %s", urlsplit(url).hostname, error)
             return IngestResult(url=url, reused=True, age=age, problem=str(error))
@@ -304,8 +310,10 @@ class SourceIngestor:
         last = self._checked.get(url)
         return last is None or self._now() - last >= self._check_interval
 
-    def _prepare(self, document: FetchedDocument) -> _Prepared:
+    def _prepare(self, document: FetchedDocument, site: str | None) -> _Prepared:
         """Read a downloaded document and clean its text."""
+        if site is not None and site_of(document.url) != site:
+            raise FetchError(OFF_SITE_MESSAGE)
         page = self._read(document)
         text = clean_text(page.text)
         if not text.strip():

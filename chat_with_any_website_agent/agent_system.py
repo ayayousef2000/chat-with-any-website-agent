@@ -92,4 +92,4 @@ def create_agent_system(settings: Settings, usage: UsageCounter) -> AgentSystem:
     Returns:
         The system. Its Groq calls wait for a limit to lift instead of giving up early.
     """
-    return AgentSystem(build_runtime(settings, usage, retrier=patient_retrier()))
+    return AgentSystem(build_runtime(settings, usage, retrier=patient_retrier(), check_followed=False))

@@ -6,7 +6,9 @@ from typing import TYPE_CHECKING, Any
 from chat_with_any_website_agent import wiring
 from chat_with_any_website_agent.config import Settings
 from chat_with_any_website_agent.graph import AgentLimits
+from chat_with_any_website_agent.navigation import LinkFollower
 from chat_with_any_website_agent.retrying import Retrier
+from chat_with_any_website_agent.robots import RobotsChecker
 from chat_with_any_website_agent.usage import UsageCounter
 from chat_with_any_website_agent.wiring import build_runtime
 
@@ -150,7 +152,9 @@ def test_the_agent_gets_the_limits_of_the_settings(monkeypatch: pytest.MonkeyPat
 
     runtime = build_runtime(settings, UsageCounter())
 
-    assert runtime.agent._limits == AgentLimits(max_steps=12, max_llm_calls=8, max_rewrites=1)
+    assert runtime.agent._limits == AgentLimits(
+        max_steps=24, max_llm_calls=12, max_rewrites=1, max_link_hops=3, max_pages=5
+    )
 
 
 def test_a_limit_that_is_too_small_for_the_retries_is_warned_about_when_the_agent_is_built(
@@ -164,7 +168,9 @@ def test_a_limit_that_is_too_small_for_the_retries_is_warned_about_when_the_agen
 
     messages = [record.getMessage() for record in caplog.records if record.name == wiring.__name__]
     assert len(messages) == 1
-    assert messages[0].startswith("AGENT_MAX_STEPS is 8, but 2 rewrite(s) and an answer can need 12 steps")
+    assert messages[0].startswith(
+        "AGENT_MAX_STEPS is 8, but 3 link hop(s), 2 rewrite(s) and an answer can need 24 steps"
+    )
 
 
 def test_the_default_limits_give_no_warning(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
@@ -185,3 +191,36 @@ def test_closing_the_runtime_closes_every_connection_and_the_store_last(monkeypa
     runtime.close()
 
     assert recorder.closed == ["groq openai/gpt-oss-120b", "groq openai/gpt-oss-20b", "embedder", "reranker", "store"]
+
+
+def test_the_agent_can_follow_links_with_the_checks_of_the_site(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings(monkeypatch, FETCH_TIMEOUT_SECONDS="7")
+    _fakes(monkeypatch)
+
+    runtime = build_runtime(settings, UsageCounter())
+
+    follower = runtime.agent._links
+    assert isinstance(follower, LinkFollower)
+    assert follower._ingestor is runtime.ingestor
+    assert follower._check is True
+    assert isinstance(follower._robots, RobotsChecker)
+
+
+def test_a_followed_page_is_not_checked_again_when_the_caller_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings(monkeypatch)
+    _fakes(monkeypatch)
+
+    runtime = build_runtime(settings, UsageCounter(), check_followed=False)
+
+    follower = runtime.agent._links
+    assert isinstance(follower, LinkFollower)
+    assert follower._check is False
+
+
+def test_the_link_limits_come_from_the_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings(monkeypatch, AGENT_MAX_LINK_HOPS="2", AGENT_MAX_PAGES="3")
+    _fakes(monkeypatch)
+
+    limits = build_runtime(settings, UsageCounter()).agent._limits
+
+    assert (limits.max_link_hops, limits.max_pages) == (2, 3)

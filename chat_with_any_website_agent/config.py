@@ -56,9 +56,12 @@ class Settings(BaseSettings):
     source_check_seconds: int = Field(default=0, ge=0)
 
     # Limits for one question
-    agent_max_steps: int = Field(default=12, gt=0)  # the most graph nodes run for one question
-    agent_max_link_hops: int = Field(default=3, ge=0)
-    agent_max_llm_calls: int = Field(default=8, gt=0)
+    agent_max_steps: int = Field(default=24, gt=0)  # the most graph nodes run for one question
+    agent_max_link_hops: int = Field(default=3, ge=0)  # the most times links are chosen; 0 keeps to the given pages
+    agent_max_pages: int = Field(
+        default=5, ge=0
+    )  # the most pages loaded by following links; 0 keeps to the given pages
+    agent_max_llm_calls: int = Field(default=12, gt=0)
     agent_max_rewrites: int = Field(default=2, ge=0)
 
     # Limits for one evaluation run

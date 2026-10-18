@@ -9,6 +9,7 @@ from chat_with_any_website_agent.links import (
     collect_links,
     links_from_json,
     links_to_json,
+    shortlist_links,
     site_of,
 )
 
@@ -180,3 +181,58 @@ def test_entries_that_are_not_an_address_and_a_text_are_skipped() -> None:
     )
 
     assert links_from_json(stored) == (Link("https://docs.example/a", "Ay"),)
+
+
+# --- the links worth showing to a model ---
+
+
+def _numbered(count: int) -> tuple[Link, ...]:
+    return tuple(Link(f"https://docs.example/page-{number}", f"Page {number}") for number in range(count))
+
+
+def test_links_that_all_fit_are_returned_as_they_are_in_the_order_of_the_page() -> None:
+    links = _numbered(5)
+
+    assert shortlist_links(links, "page 3 statement", limit=5) == links
+    assert shortlist_links(links, "", limit=10) == links
+
+
+def test_the_links_that_share_words_with_the_topic_come_first_when_there_are_too_many() -> None:
+    wanted = (
+        Link("https://docs.example/tutorial/errors", "Errors and Exceptions"),
+        Link("https://docs.example/tutorial/controlflow", "More Control Flow Tools"),
+    )
+    links = (*_numbered(10), *wanted)
+
+    chosen = shortlist_links(links, "Which kinds of errors does the tutorial distinguish? exceptions", limit=3)
+
+    assert chosen[0] == wanted[0]
+    assert len(chosen) == 3
+
+
+def test_word_endings_are_ignored_when_links_are_compared_with_the_topic() -> None:
+    other = _numbered(6)
+    plural = Link("https://docs.example/x", "Break and continue Statements")
+
+    chosen = shortlist_links((*other, plural), "What does the break statement do?", limit=2)
+
+    assert chosen[0] == plural
+
+
+def test_the_words_of_the_address_count_as_well_as_the_text() -> None:
+    other = _numbered(6)
+    by_address = Link("https://docs.example/tutorial/data_structures", "")
+
+    chosen = shortlist_links((*other, by_address), "data structures", limit=2)
+
+    assert chosen[0] == by_address
+
+
+def test_links_that_match_equally_keep_the_order_of_the_page() -> None:
+    links = _numbered(8)
+
+    assert shortlist_links(links, "nothing in common here", limit=3) == links[:3]
+
+
+def test_a_limit_of_zero_shows_nothing() -> None:
+    assert shortlist_links(_numbered(3), "page", limit=0) == ()

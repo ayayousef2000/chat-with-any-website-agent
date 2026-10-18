@@ -8,6 +8,7 @@ that is not on this list. Link text comes from the page, so it is only ever data
 """
 
 import json
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from urllib.parse import urljoin, urlsplit, urlunsplit
@@ -15,7 +16,7 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 from chat_with_any_website_agent.fetching import ALLOWED_PORTS
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Sequence
 
 # The most links kept from one page, and the longest text kept for a link. Menus and footers repeat the same links, and
 # a page of a very large site can have thousands, so what is kept is bounded.
@@ -152,3 +153,49 @@ def _normalize(url: str) -> str:
     """An address without its fragment, with a lower-case host, and with ``/`` for an empty path."""
     parts = urlsplit(url)
     return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path or "/", parts.query, ""))
+
+
+# The words that every question has and that say nothing about which page holds the answer.
+_COMMON_WORDS = frozenset(
+    {
+        *("about", "after", "also", "and", "any", "are", "been", "can", "could", "did", "does", "for", "from"),
+        *("has", "have", "how", "into", "its", "not", "that", "the", "their", "there", "these", "this", "was"),
+        *("were", "what", "when", "where", "which", "who", "why", "will", "with", "would", "you", "your"),
+    }
+)
+_STEM_CHARS = 6
+
+
+def shortlist_links(links: Sequence[Link], topic: str, limit: int) -> tuple[Link, ...]:
+    """Choose the links worth showing to a model: the ones that share the most words with a topic.
+
+    A page can have hundreds of links, and every one shown to the model costs tokens. When there are more links than
+    ``limit``, the ones whose text or address share the most words with the topic come first (word endings are
+    ignored, so ``statements`` matches ``statement``), and ties keep the order of the page. When all of them fit, they
+    are returned as they are, in the order of the page.
+
+    Args:
+        links: The candidate links, in the order of the page.
+        topic: What is being looked for, for example the question and what the pages read so far were missing.
+        limit: The most links to return.
+
+    Returns:
+        At most ``limit`` links.
+    """
+    if len(links) <= limit:
+        return tuple(links)
+    wanted = _stems(topic)
+    scored = [
+        (-len(wanted & _stems(f"{link.text} {urlsplit(link.url).path}")), index) for index, link in enumerate(links)
+    ]
+    return tuple(links[index] for _, index in sorted(scored)[:limit])
+
+
+def _stems(text: str) -> set[str]:
+    """The words of a text without their endings, leaving out the ones that every question has."""
+    words = re.findall(r"\w+", text.lower().replace("_", " "))
+    return {
+        word[:_STEM_CHARS] if len(word) > _STEM_CHARS else word.removesuffix("s")
+        for word in words
+        if len(word) > 2 and word not in _COMMON_WORDS
+    }

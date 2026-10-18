@@ -13,8 +13,10 @@ from chat_with_any_website_agent.embeddings import CohereEmbedder
 from chat_with_any_website_agent.graph import AgentLimits, SourceAgent
 from chat_with_any_website_agent.groq_client import GroqClient
 from chat_with_any_website_agent.ingest import SourceIngestor
+from chat_with_any_website_agent.navigation import LinkFollower
 from chat_with_any_website_agent.reranking import CohereReranker
 from chat_with_any_website_agent.retriever import SourceRetriever
+from chat_with_any_website_agent.robots import RobotsChecker
 from chat_with_any_website_agent.throttle import Throttle
 from chat_with_any_website_agent.vector_store import WeaviateStore
 
@@ -55,7 +57,12 @@ class AgentRuntime:
 
 
 def build_runtime(
-    settings: Settings, usage: UsageCounter, *, tenant: str | None = None, retrier: Retrier | None = None
+    settings: Settings,
+    usage: UsageCounter,
+    *,
+    tenant: str | None = None,
+    retrier: Retrier | None = None,
+    check_followed: bool = True,
 ) -> AgentRuntime:
     """Connect to the services and build the agent.
 
@@ -64,6 +71,8 @@ def build_runtime(
         usage: Counts every call and token, and stops a run at its limits.
         tenant: The Weaviate tenant to use instead of the one in the settings, for example ``demo``.
         retrier: How to try again after a Groq limit or outage. The default suits a person who is waiting.
+        check_followed: Whether to ask the website if a followed page that is already stored changed. An evaluation
+            turns it off, so that its answers do not depend on when each page was asked about.
 
     Returns:
         The agent and its parts. Call ``close`` when done.
@@ -92,15 +101,20 @@ def build_runtime(
     limits = AgentLimits.from_settings(settings)
     for note in limits.problems():
         logger.warning(note)
+    ingestor = SourceIngestor.from_settings(settings, store, embedder)
+    follower = LinkFollower(
+        ingestor, store, RobotsChecker(timeout=settings.fetch_timeout_seconds), check=check_followed
+    )
     agent = SourceAgent(
         SourceRetriever(store, embedder, reranker),
         GroqChatModel(answerer),
         GroqChatModel(grader),
         limits,
+        follower,
     )
     return AgentRuntime(
         agent=agent,
-        ingestor=SourceIngestor.from_settings(settings, store, embedder),
+        ingestor=ingestor,
         store=store,
         chats=(answerer, grader),
         cohere=(embedder, reranker),
