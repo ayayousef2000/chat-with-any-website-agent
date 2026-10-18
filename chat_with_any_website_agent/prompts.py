@@ -68,24 +68,38 @@ REWRITE_PROMPT = ChatPromptTemplate.from_messages(
             "You write a better search query for a source. You are given a question, the query that did not find "
             "the answer, and what was missing. "
             'Reply with JSON only, in this form: {{"query": "the new query"}}. '
-            "Keep the names and key terms of the question, add other words the source might use, use the language "
-            "of the question, and use at most 20 words.",
+            "Keep the names and key terms of the question and rephrase the rest with synonyms and related words that "
+            "the source might use. Do not add names, dates or other facts that are not in the question. "
+            "Use the language of the question and at most 20 words.",
         ),
         ("human", "Question: {question}\nPrevious query: {query}\nWhat was missing: {reason}"),
     ]
 )
 
+_ANSWER_RULES = (
+    "Answer the question using only the numbered excerpts. "
+    "End every sentence of the answer with the number of the excerpt that supports it, in square brackets, like [1] "
+    "or [1][2]. An answer without such citations is rejected. For example: The loop ends when the list is empty [1]. "
+    "Answer in the language of the question and be concise. "
+    f"If the excerpts do not contain the answer, reply with exactly {NOT_COVERED_MARKER} and nothing else. "
+    + _UNTRUSTED
+)
+
 ANSWER_PROMPT = ChatPromptTemplate.from_messages(
     [
-        (
-            "system",
-            "Answer the question using only the numbered excerpts. "
-            "Put the number of the excerpt that supports a statement in square brackets right after the "
-            "statement, like [1] or [1][2]. "
-            "Answer in the language of the question and be concise. "
-            f"If the excerpts do not contain the answer, reply with exactly {NOT_COVERED_MARKER} and nothing else. "
-            + _UNTRUSTED,
-        ),
+        ("system", _ANSWER_RULES),
         ("human", "Question: {question}\n\nExcerpts:\n{excerpts}"),
+    ]
+)
+
+# Used once, when the check of the citations rejected an answer: the model sees its answer and what was wrong.
+REPAIR_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        ("system", _ANSWER_RULES + " Your previous answer was rejected: write it again and fix the problem."),
+        (
+            "human",
+            "Question: {question}\n\nExcerpts:\n{excerpts}\n\nYour previous answer:\n{answer}\n\n"
+            "Why it was rejected: {problem}",
+        ),
     ]
 )

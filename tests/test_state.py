@@ -13,6 +13,7 @@ def test_a_new_state_starts_with_the_question_as_the_query_and_the_counters_at_z
         "urls": ["https://docs.example/control"],
         "query": "What does pass do?",
         "rewrites": 0,
+        "repairs": 0,
         "documents": [],
         "abstained": False,
         "steps": [],

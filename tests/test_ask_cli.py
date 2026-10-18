@@ -135,6 +135,21 @@ def test_an_abstention_gives_the_reason_and_no_sources() -> None:
 
     assert "Reason: The excerpts do not answer the question." in text
     assert "Sources cited" not in text
+    assert "rejected" not in text
+
+
+def test_an_answer_that_the_check_rejected_is_shown_with_the_reason() -> None:
+    rejected = AgentAnswer(
+        answer=ABSTAINED.answer,
+        abstained=True,
+        reason="The answer cites no excerpt.",
+        draft="The else clause is not run after a break.",
+    )
+
+    text = format_answer(IngestResult(url=NORMALIZED, reused=True), rejected, UsageCounter(), 1.0)
+
+    assert "Reason: The answer cites no excerpt." in text
+    assert "The answer that the check rejected:\n  The else clause is not run after a break." in text
 
 
 def test_the_steps_can_be_left_out() -> None:

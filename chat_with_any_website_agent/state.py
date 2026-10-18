@@ -23,6 +23,8 @@ class AgentState(TypedDict, total=False):
         documents: The excerpts of the latest search, best first.
         grade: The verdict on those excerpts.
         answer: The text of the answer, before it was checked.
+        repairs: How many times the model was asked to correct a rejected answer.
+        draft: The last answer that the check of the citations rejected, kept to show what was refused.
         citations: The excerpts that the checked answer cites.
         abstained: ``True`` when the agent decided not to answer from the source.
         reason: Why the agent abstained, or what the grade found missing.
@@ -37,6 +39,8 @@ class AgentState(TypedDict, total=False):
     documents: list[Document]
     grade: Grade
     answer: str
+    repairs: int
+    draft: str
     citations: list[Citation]
     abstained: bool
     reason: str
@@ -59,6 +63,7 @@ def new_state(question: str, urls: list[str] | None = None) -> AgentState:
         "urls": urls,
         "query": question,
         "rewrites": 0,
+        "repairs": 0,
         "documents": [],
         "abstained": False,
         "steps": [],
