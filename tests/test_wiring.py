@@ -1,5 +1,6 @@
 """Tests of the building of the agent from the settings, with fakes instead of the real clients."""
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 from chat_with_any_website_agent import wiring
@@ -46,9 +47,15 @@ def _fakes(monkeypatch: pytest.MonkeyPatch) -> Recorder:
         def __init__(self, *args: Any, **options: Any) -> None:
             recorder.make("embedder", args, options)
 
+        def close(self) -> None:
+            recorder.closed.append("embedder")
+
     class FakeReranker:
         def __init__(self, *args: Any, **options: Any) -> None:
             recorder.make("reranker", args, options)
+
+        def close(self) -> None:
+            recorder.closed.append("reranker")
 
     class FakeStore:
         @classmethod
@@ -146,11 +153,35 @@ def test_the_agent_gets_the_limits_of_the_settings(monkeypatch: pytest.MonkeyPat
     assert runtime.agent._limits == AgentLimits(max_steps=12, max_llm_calls=8, max_rewrites=1)
 
 
-def test_closing_the_runtime_closes_the_groq_clients_and_the_store(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_limit_that_is_too_small_for_the_retries_is_warned_about_when_the_agent_is_built(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    settings = _settings(monkeypatch, AGENT_MAX_STEPS="8")  # the old default that a copied .env keeps
+    _fakes(monkeypatch)
+
+    with caplog.at_level(logging.WARNING, logger=wiring.__name__):
+        build_runtime(settings, UsageCounter())
+
+    messages = [record.getMessage() for record in caplog.records if record.name == wiring.__name__]
+    assert len(messages) == 1
+    assert messages[0].startswith("AGENT_MAX_STEPS is 8, but 2 rewrite(s) and an answer can need 12 steps")
+
+
+def test_the_default_limits_give_no_warning(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    settings = _settings(monkeypatch)
+    _fakes(monkeypatch)
+
+    with caplog.at_level(logging.WARNING, logger=wiring.__name__):
+        build_runtime(settings, UsageCounter())
+
+    assert [record for record in caplog.records if record.name == wiring.__name__] == []
+
+
+def test_closing_the_runtime_closes_every_connection_and_the_store_last(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = _settings(monkeypatch)
     recorder = _fakes(monkeypatch)
     runtime = build_runtime(settings, UsageCounter())
 
     runtime.close()
 
-    assert recorder.closed == ["groq openai/gpt-oss-120b", "groq openai/gpt-oss-20b", "store"]
+    assert recorder.closed == ["groq openai/gpt-oss-120b", "groq openai/gpt-oss-20b", "embedder", "reranker", "store"]

@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 import cohere
 
-from chat_with_any_website_agent.cohere_support import NO_CLIENT_RETRIES, default_retrier
+from chat_with_any_website_agent.cohere_support import NO_CLIENT_RETRIES, close_client, default_retrier
 from chat_with_any_website_agent.usage import COHERE
 
 if TYPE_CHECKING:
@@ -59,6 +59,10 @@ class CohereReranker:
         self._throttle = throttle
         self._retrier = retrier or default_retrier()
         self._usage = usage
+
+    def close(self) -> None:
+        """Close the connection to Cohere, for example when a short command is done."""
+        close_client(self._client)
 
     def rerank(self, query: str, documents: Sequence[str], top_n: int) -> list[RankedDocument]:
         """Keep the texts most relevant to the question.

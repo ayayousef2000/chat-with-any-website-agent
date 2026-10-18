@@ -168,7 +168,7 @@
       {
         "question": "من صمم لغة بايثون؟",
         "reference": "صمم لغة بايثون خيدو فان روسم.",
-        "must_contain": ["خيدو فان روسم"],
+        "must_contain": ["خيدو فان روسم", "جيدو فان روسم"],
         "category": "arabic",
         "language": "ar"
       }

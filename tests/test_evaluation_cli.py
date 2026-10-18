@@ -201,6 +201,25 @@ def test_a_run_that_reaches_its_limit_says_so_and_can_be_continued(
     assert len(json.loads(out.read_text())) == 2
 
 
+def test_questions_the_judge_could_not_score_are_asked_again_only_when_asked_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _wire(monkeypatch, {})
+    out = tmp_path / "out.json"
+    dataset = str(_write(tmp_path / "questions.json", PAGES))
+    main(["run", dataset, "--system", "fake", "--out", str(out)])
+    saved = json.loads(out.read_text())
+    saved[0].update(correct=None, faithful=None, reason="The judge's reply could not be read.")
+    out.write_text(json.dumps(saved))
+
+    main(["run", dataset, "--system", "fake", "--out", str(out), "--resume"])
+    assert json.loads(out.read_text())[0]["correct"] is None  # a plain resume leaves it as it is
+
+    main(["run", dataset, "--system", "fake", "--out", str(out), "--resume", "--retry-unscored"])
+    results = json.loads(out.read_text())
+    assert [result["correct"] for result in results] == [True, True]  # asked and judged again
+
+
 def test_a_run_can_be_limited_to_a_few_questions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _wire(monkeypatch, {})
     out = tmp_path / "out.json"

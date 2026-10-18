@@ -1,7 +1,7 @@
 """Tests of the evaluation harness with a fake system and a fake judge: no service is used."""
 
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -301,6 +301,7 @@ def test_every_question_is_scored_and_what_it_cost_is_measured_without_the_judge
     assert (first.retrieval_hit, second.retrieval_hit, third.retrieval_hit) == (True, False, None)
     assert (first.faithful, first.correct, first.reason) == (True, True, "fine")
     assert first.answer == "answer to q1"
+    assert first.agent_excerpts == ("a text with alpha for q1",)  # what the answer was based on is kept
     assert (first.cohere_calls, first.groq_calls, first.groq_tokens) == (1, 1, 100)  # the judge's call is not in it
     assert usage.calls == {COHERE: 3, GROQ: 6}  # but the run's counter has all of them
     assert first.seconds >= 0
@@ -325,6 +326,8 @@ def test_an_answer_with_no_excerpts_has_no_retrieval_score() -> None:
         ("Words in **bold** and _italic_ text", "words in bold and italic text"),
         ("class instantiation invokes \\_\\_init\\_\\_()", "invokes __init__()"),
         ("two\n  lines    of text", "two lines of text"),
+        ("a café with a menu", "a cafe with a menu"),
+        ("صممها جُيدو فان روسم", "جيدو فان روسم"),  # the same name with and without its vowel marks
     ],
 )
 def test_an_expected_phrase_is_found_whatever_the_formatting_of_the_excerpt(excerpt: str, phrase: str) -> None:
@@ -507,7 +510,7 @@ def test_the_steps_of_a_result_survive_being_saved_and_read_again(tmp_path: Path
 
     class Explaining(FakeSystem):
         def ask(self, case: Case) -> Outcome:
-            return Outcome(answer="a", reason="why", steps=("one", "two"), draft="d")
+            return Outcome(answer="a", excerpts=("first", "second"), reason="why", steps=("one", "two"), draft="d")
 
     report = run_evaluation(Explaining(usage), [_case("q1")], FakeJudge(), usage)
     path = tmp_path / "run.json"
@@ -516,20 +519,21 @@ def test_the_steps_of_a_result_survive_being_saved_and_read_again(tmp_path: Path
 
     (loaded,) = load_results(path)
     assert loaded == report.results[0]
-    assert loaded.agent_steps == ("one", "two")  # a tuple again, not the list that JSON holds
+    assert loaded.agent_steps == ("one", "two")  # tuples again, not the lists that JSON holds
+    assert loaded.agent_excerpts == ("first", "second")
 
 
 def test_results_saved_before_the_steps_were_kept_can_still_be_read(tmp_path: Path) -> None:
     usage = UsageCounter()
     report = run_evaluation(FakeSystem(usage), [_case("q1")], FakeJudge(), usage)
     old = asdict(report.results[0])
-    for name in ("agent_reason", "agent_draft", "agent_steps"):
+    for name in ("agent_reason", "agent_draft", "agent_steps", "agent_excerpts"):
         del old[name]
     path = _write(tmp_path / "old.json", [old])
 
     (loaded,) = load_results(path)
 
-    assert loaded == report.results[0]
+    assert loaded == replace(report.results[0], agent_excerpts=())
 
 
 def test_a_file_that_is_not_a_list_of_results_is_refused(tmp_path: Path) -> None:
