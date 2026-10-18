@@ -16,6 +16,7 @@ can be continued the next day.
 
 import json
 import time
+import unicodedata
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -149,8 +150,9 @@ class Verdict:
 class Result:
     """The scores and the cost of one evaluated question.
 
-    The ``agent_`` fields say how the system got to its answer, so that a wrong answer can be understood from the
-    results file. They are empty for a system that does not report them and in results saved before they existed.
+    The ``agent_`` fields say how the system got to its answer and what it was shown, so that an answer can be checked
+    by hand from the results file. They are empty for a system that does not report them and in results saved before
+    they existed.
     """
 
     url: str
@@ -170,6 +172,7 @@ class Result:
     agent_reason: str | None = None
     agent_draft: str | None = None
     agent_steps: tuple[str, ...] = ()
+    agent_excerpts: tuple[str, ...] = ()
 
     @property
     def key(self) -> str:
@@ -422,6 +425,7 @@ def _evaluate(system: System, judge: ChatClient, usage: UsageCounter, case: Case
         agent_reason=outcome.reason,
         agent_draft=outcome.draft,
         agent_steps=outcome.steps,
+        agent_excerpts=outcome.excerpts,
     )
 
 
@@ -430,15 +434,21 @@ _FORMATTING = str.maketrans("", "", "`*_\\")
 
 
 def _plain(text: str) -> str:
-    """Lower-case a text without its Markdown marks and with its white space made single, to compare phrases."""
-    return " ".join(text.translate(_FORMATTING).casefold().split())
+    """Lower-case a text without its Markdown marks, accents and vowel marks, and with its white space made single.
+
+    A phrase is compared in this form, so that "café" is found for "cafe" and an Arabic name with its vowel marks is
+    found for the same name without them.
+    """
+    decomposed = unicodedata.normalize("NFKD", text.translate(_FORMATTING))
+    without_marks = "".join(character for character in decomposed if unicodedata.category(character) != "Mn")
+    return " ".join(without_marks.casefold().split())
 
 
 def _retrieval_hit(case: Case, outcome: Outcome) -> bool | None:
     """Whether the excerpts contain an expected phrase; ``None`` when that cannot be told.
 
-    The comparison ignores capitals, white space and Markdown marks, so that "The pass statement does nothing"
-    is found in "The `pass` statement does nothing".
+    The comparison ignores capitals, white space, Markdown marks, accents and vowel marks, so that "The pass statement
+    does nothing" is found in "The `pass` statement does nothing".
     """
     if not case.answerable or not case.must_contain or not outcome.excerpts:
         return None
@@ -455,6 +465,7 @@ def run_and_save(
     out: Path | None = None,
     resume: bool = False,
     limit: int | None = None,
+    retry_unscored: bool = False,
 ) -> RunReport:
     """Run an evaluation and keep the results in a file, saved after every question.
 
@@ -466,6 +477,8 @@ def run_and_save(
         out: The results file. Nothing is saved when it is ``None``.
         resume: Continue the results already in ``out``: the questions in it are not asked again.
         limit: Answer at most this many more questions, for a small first run.
+        retry_unscored: With ``resume``, ask again the questions that the judge could not score, which are left out
+            of the results that are kept.
 
     Returns:
         All the results, those found in the file first, and why the run stopped if it did.
@@ -474,6 +487,8 @@ def run_and_save(
         DatasetError: If the results file cannot be read.
     """
     previous = load_results(out) if resume and out is not None and out.exists() else []
+    if retry_unscored:
+        previous = [result for result in previous if result.correct is not None]
     known = {result.key for result in previous}
     pending = [case for case in cases if case.key not in known]
     if limit is not None:
@@ -528,5 +543,6 @@ def load_results(path: Path) -> list[Result]:
 def _result(item: Any) -> Result:
     """One saved result. A result saved before the ``agent_`` fields existed has them empty."""
     fields = dict(item)
-    fields["agent_steps"] = tuple(fields.get("agent_steps", ()))  # JSON has no tuples
+    for name in ("agent_steps", "agent_excerpts"):
+        fields[name] = tuple(fields.get(name, ()))  # JSON has no tuples
     return Result(**fields)

@@ -100,6 +100,30 @@ class AgentLimits:
             max_rewrites=settings.agent_max_rewrites,
         )
 
+    def problems(self) -> list[str]:
+        """Say which limits are too small for the retries that are allowed.
+
+        A limit that is too small is not an error: the agent only skips the retries that do not fit. But a copied
+        ``.env`` can keep an old, smaller value without anybody noticing, so the notes are shown when the agent starts.
+
+        Returns:
+            A note for each limit that is too small to complete every retry and an answer. Empty when they all fit.
+        """
+        steps_needed = 3 * self.max_rewrites + 3 + ANSWER_STEPS  # read, each search and grade, each rewrite, an answer
+        calls_needed = 2 * self.max_rewrites + 2  # each grade, each rewrite and the answer
+        notes = []
+        if self.max_steps < steps_needed:
+            notes.append(
+                f"AGENT_MAX_STEPS is {self.max_steps}, but {self.max_rewrites} rewrite(s) and an answer can need "
+                f"{steps_needed} steps, so retries are skipped when they do not fit."
+            )
+        if self.max_llm_calls < calls_needed:
+            notes.append(
+                f"AGENT_MAX_LLM_CALLS is {self.max_llm_calls}, but {self.max_rewrites} rewrite(s) and an answer can "
+                f"need {calls_needed} calls to the model, so retries are skipped when they do not fit."
+            )
+        return notes
+
 
 @dataclass(frozen=True)
 class AgentAnswer:

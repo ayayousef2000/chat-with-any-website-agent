@@ -67,6 +67,11 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--out", required=True, type=Path, help="The results file, saved after every question")
     run.add_argument("--resume", action="store_true", help="Continue the results already in the file")
     run.add_argument("--limit", type=int, help="Answer at most this many more questions, for a small first run")
+    run.add_argument(
+        "--retry-unscored",
+        action="store_true",
+        help="With --resume, ask again the questions that the judge could not score",
+    )
     return parser
 
 
@@ -107,7 +112,16 @@ def _run(args: argparse.Namespace) -> int:
     judge = GroqClient.from_settings(settings, model=settings.eval_judge_model, usage=usage, retrier=patient_retrier())
     system = factory(settings, usage)
     try:
-        report = run_and_save(system, cases, judge, usage, out=args.out, resume=args.resume, limit=args.limit)
+        report = run_and_save(
+            system,
+            cases,
+            judge,
+            usage,
+            out=args.out,
+            resume=args.resume,
+            limit=args.limit,
+            retry_unscored=args.retry_unscored,
+        )
     finally:
         system.close()
     _say(format_summary(summarize(report.results)))

@@ -4,6 +4,7 @@ This is the one place where the real Cohere, Weaviate and Groq clients are creat
 agent does goes through the counter that is given here, so that calls and tokens are counted and can be limited.
 """
 
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -22,6 +23,8 @@ if TYPE_CHECKING:
     from chat_with_any_website_agent.retrying import Retrier
     from chat_with_any_website_agent.usage import UsageCounter
 
+logger = logging.getLogger(__name__)
+
 # The window of the rerank limit of the plan, in seconds.
 RERANK_WINDOW_SECONDS = 60.0
 
@@ -35,17 +38,19 @@ class AgentRuntime:
         ingestor: Prepares a web page or PDF file for questions.
         store: The connection to Weaviate.
         chats: The Groq clients, which hold connections.
+        cohere: The Cohere embedder and reranker, which hold connections.
     """
 
     agent: SourceAgent
     ingestor: SourceIngestor
     store: WeaviateStore
     chats: tuple[GroqClient, ...]
+    cohere: tuple[CohereEmbedder | CohereReranker, ...] = ()
 
     def close(self) -> None:
-        """Close the connections to Weaviate and Groq."""
-        for chat in self.chats:
-            chat.close()
+        """Close the connections to Groq, Cohere and Weaviate."""
+        for client in (*self.chats, *self.cohere):
+            client.close()
         self.store.close()
 
 
@@ -84,15 +89,19 @@ def build_runtime(
     )
     answerer = GroqClient.from_settings(settings, usage=usage, retrier=retrier)
     grader = GroqClient.from_settings(settings, model=settings.groq_grade_model, usage=usage, retrier=retrier)
+    limits = AgentLimits.from_settings(settings)
+    for note in limits.problems():
+        logger.warning(note)
     agent = SourceAgent(
         SourceRetriever(store, embedder, reranker),
         GroqChatModel(answerer),
         GroqChatModel(grader),
-        AgentLimits.from_settings(settings),
+        limits,
     )
     return AgentRuntime(
         agent=agent,
         ingestor=SourceIngestor.from_settings(settings, store, embedder),
         store=store,
         chats=(answerer, grader),
+        cohere=(embedder, reranker),
     )

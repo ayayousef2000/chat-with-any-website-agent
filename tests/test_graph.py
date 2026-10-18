@@ -439,6 +439,35 @@ def test_what_follows_the_grade_depends_on_the_verdict_and_on_what_is_left_of_th
     assert next_step(state, LIMITS) == expected
 
 
+def test_the_default_limits_have_no_problem() -> None:
+    assert LIMITS.problems() == []
+
+
+@pytest.mark.parametrize(
+    ("limits", "expected"),
+    [
+        (AgentLimits(max_steps=8, max_llm_calls=8, max_rewrites=2), ["AGENT_MAX_STEPS is 8, but 2 rewrite(s)"]),
+        (AgentLimits(max_steps=12, max_llm_calls=5, max_rewrites=2), ["AGENT_MAX_LLM_CALLS is 5, but 2 rewrite(s)"]),
+        (AgentLimits(max_steps=9, max_llm_calls=8, max_rewrites=1), []),  # exactly what one rewrite needs
+        (AgentLimits(max_steps=6, max_llm_calls=2, max_rewrites=0), []),  # no rewrites, so no retry to make room for
+    ],
+)
+def test_limits_that_are_too_small_for_the_allowed_retries_are_named(limits: AgentLimits, expected: list[str]) -> None:
+    notes = limits.problems()
+
+    assert len(notes) == len(expected)
+    for note, start in zip(notes, expected, strict=True):
+        assert note.startswith(start)
+
+
+def test_both_limits_can_be_too_small_at_once() -> None:
+    notes = AgentLimits(max_steps=3, max_llm_calls=1, max_rewrites=2).problems()
+
+    assert [note.split(" is ")[0] for note in notes] == ["AGENT_MAX_STEPS", "AGENT_MAX_LLM_CALLS"]
+    assert "can need 12 steps" in notes[0]
+    assert "need 6 calls to the model" in notes[1]
+
+
 def test_the_limits_come_from_the_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("COHERE_API_KEY", "c")
     monkeypatch.setenv("WEAVIATE_URL", "https://example.weaviate.cloud")

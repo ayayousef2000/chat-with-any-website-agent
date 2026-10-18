@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import cohere
 
-from chat_with_any_website_agent.cohere_support import NO_CLIENT_RETRIES, default_retrier
+from chat_with_any_website_agent.cohere_support import NO_CLIENT_RETRIES, close_client, default_retrier
 from chat_with_any_website_agent.usage import COHERE
 
 if TYPE_CHECKING:
@@ -48,6 +48,10 @@ class CohereEmbedder:
         self._dimension = dimension
         self._retrier = retrier or default_retrier()
         self._usage = usage
+
+    def close(self) -> None:
+        """Close the connection to Cohere, for example when a short command is done."""
+        close_client(self._client)
 
     def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:
         """Embed texts that will be stored and searched later.
