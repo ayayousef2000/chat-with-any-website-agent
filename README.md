@@ -75,9 +75,10 @@ Ask a question about a page or a PDF file. The source is loaded once and stored.
 uv run agent-ask "https://docs.python.org/3/tutorial/controlflow.html" "What does the pass statement do?"
 ```
 
-It prints the answer, the sources it cites, every step the agent took and what the question cost. Useful options:
+It prints the answer, the sources it cites, the pages it opened by following links, every step the agent took and what the question cost. If the page you give does not hold the answer, the agent looks at the links of the page and opens the ones that look relevant, on the same site only. Useful options:
 
 - `--also URL` searches a further source as well; it can be repeated.
+- `--no-follow` stays on the given sources and does not follow links.
 - `--refresh` downloads the source again even if a copy is stored and the page did not change.
 - `--no-check` uses a stored copy without asking the website whether the page changed.
 - `--tenant NAME` uses another Weaviate tenant, for example `demo`.

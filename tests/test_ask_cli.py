@@ -263,7 +263,7 @@ def test_the_source_is_loaded_and_the_question_asked_about_it(
     assert code == EXIT_OK
     assert runtime.ingested == [(URL, False)]
     assert runtime.asked == [("What does pass do?", [NORMALIZED])]  # the normalized address the source is stored under
-    assert built == [{"tenant": None}]
+    assert built == [{"tenant": None, "follow_links": True, "check_followed": True}]
     assert runtime.closed
     out = capsys.readouterr().out
     assert "The pass statement does nothing [1]." in out
@@ -329,7 +329,7 @@ def test_the_options_reach_the_runtime_and_the_ingestor(
 
     main([URL, "Q?", "--tenant", "demo", "--refresh", "--no-steps"])
 
-    assert built == [{"tenant": "demo"}]
+    assert built == [{"tenant": "demo", "follow_links": True, "check_followed": True}]
     assert runtime.ingested == [(URL, True)]
     assert "Steps:" not in capsys.readouterr().out
 
@@ -409,3 +409,45 @@ def test_a_service_that_cannot_be_reached_at_the_start_is_reported(
 
     assert code == EXIT_SERVICE
     assert "A service failed: ConnectionError: Weaviate cannot be reached" in capsys.readouterr().err
+
+
+# --- following links ---
+
+
+def test_the_pages_opened_by_following_links_are_listed_before_the_steps() -> None:
+    followed = (f"{URL}/two", f"{URL}/three")
+    answer = AgentAnswer(answer="Yes [1].", abstained=False, citations=(CITATION,), followed=followed, steps=("Step.",))
+    ingested = IngestResult(url=NORMALIZED, reused=False, title="Control Flow", chunk_count=4)
+
+    text = format_answer(ingested, answer, UsageCounter(), 1.0)
+
+    assert f"Pages opened by following links:\n  {URL}/two\n  {URL}/three\n\nSteps:\n  1. Step." in text
+    assert text.index("Sources cited:") < text.index("Pages opened by following links:")
+
+
+def test_no_pages_are_listed_when_none_was_followed() -> None:
+    ingested = IngestResult(url=NORMALIZED, reused=False, title="Control Flow", chunk_count=4)
+
+    assert "Pages opened" not in format_answer(ingested, ANSWERED, UsageCounter(), 1.0)
+
+
+def test_pages_that_were_followed_are_listed_also_when_the_agent_does_not_answer() -> None:
+    answer = AgentAnswer(answer="No.", abstained=True, reason="Not covered.", followed=(f"{URL}/two",))
+    ingested = IngestResult(url=NORMALIZED, reused=False, title="Control Flow", chunk_count=4)
+
+    assert f"Pages opened by following links:\n  {URL}/two" in format_answer(ingested, answer, UsageCounter(), 1.0)
+
+
+def test_following_links_can_be_switched_off_and_the_check_of_followed_pages_follows_no_check(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _, built = _wire(monkeypatch)
+
+    main([URL, "Q?", "--no-follow", "--no-check"])
+    main([URL, "Q?"])
+
+    assert built == [
+        {"tenant": None, "follow_links": False, "check_followed": False},
+        {"tenant": None, "follow_links": True, "check_followed": True},
+    ]
+    capsys.readouterr()
