@@ -5,13 +5,16 @@ looked up once, every address it resolves to must be public, and the connection 
 not to a second lookup of the name, so a name server cannot lead the connection to a private address (DNS
 rebinding). Each redirect is checked again in the same way. Only the standard web ports are used, an address with a
 user name or password is refused, and the size and the total time of a download are limited whatever the server says.
+
+A page that was downloaded before can be asked for again only if it changed, with the standard conditional request
+(``If-None-Match`` and ``If-Modified-Since``). The same checks apply to that request.
 """
 
 import ipaddress
 import logging
 import socket
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 from urllib.parse import urlsplit, urlunsplit
 
@@ -51,10 +54,52 @@ MAX_ADDRESSES_TRIED = 4
 TOTAL_TIME_FACTOR = 2
 
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+_NOT_MODIFIED = 304
+# A version mark (an ETag or a date) is short. A longer one is not used, because it comes from a website.
+MAX_VALIDATOR_CHARS = 256
 _PDF_TYPES = frozenset({"application/pdf", "application/x-pdf"})
 _FILE_KINDS = {"image": "an image", "video": "a video", "audio": "an audio file"}
 # Addresses in this range stand for IPv4 addresses (RFC 6052); 64:ff9b::a00:1 reaches 10.0.0.1 through a NAT64 gateway.
 _NAT64_PREFIX = ipaddress.ip_network("64:ff9b::/96")
+
+
+def _header_value(value: str | None) -> str | None:
+    """A version mark that is safe to keep and to send back: short, plain printable text; otherwise ``None``."""
+    if value is None:
+        return None
+    cleaned = value.strip()
+    if not cleaned or len(cleaned) > MAX_VALIDATOR_CHARS or not cleaned.isascii() or not cleaned.isprintable():
+        return None
+    return cleaned
+
+
+@dataclass(frozen=True)
+class Validators:
+    """What a website said about the version of a page it sent, so that it can be asked later whether it changed.
+
+    Attributes:
+        etag: The ``ETag`` of the page, as the website wrote it.
+        last_modified: The ``Last-Modified`` date of the page, as the website wrote it.
+    """
+
+    etag: str | None = None
+    last_modified: str | None = None
+
+    def request_headers(self) -> dict[str, str]:
+        """The headers that ask a website to send a page only if it changed.
+
+        A value that is empty, long or not plain printable text is left out. The values come from a website, and from
+        storage when they were saved, so they are checked before they are sent back.
+
+        Returns:
+            The headers, which are none when nothing is known about the version.
+        """
+        headers: dict[str, str] = {}
+        for name, value in (("If-None-Match", self.etag), ("If-Modified-Since", self.last_modified)):
+            cleaned = _header_value(value)
+            if cleaned:
+                headers[name] = cleaned
+        return headers
 
 
 @dataclass(frozen=True)
@@ -65,11 +110,13 @@ class FetchedDocument:
         kind: ``"html"`` for a web page, ``"pdf"`` for a PDF file.
         body: The bytes of the response, within the size limit.
         url: The address the content came from, after redirects and without a fragment.
+        validators: What the website said about the version of the document, to ask later whether it changed.
     """
 
     kind: Literal["html", "pdf"]
     body: bytes
     url: str
+    validators: Validators = field(default_factory=Validators)
 
 
 def normalize_url(url: str) -> str:
@@ -173,7 +220,50 @@ def fetch_document(
         FetchError: If the download fails, takes too long, is too large or redirects too often.
         ExtractionError: If the address leads to something other than a web page or an allowed PDF file.
     """
+    document = _download(url, Validators(), timeout, max_bytes, pdf_max_bytes)
+    if document is None:  # pragma: no cover - only a conditional request can be answered with "not modified"
+        raise AssertionError("a request without version marks cannot be answered with 'not modified'")
+    return document
+
+
+def fetch_if_changed(
+    url: str,
+    validators: Validators,
+    *,
+    timeout: float = DEFAULT_TIMEOUT,
+    max_bytes: int = DEFAULT_MAX_BYTES,
+    pdf_max_bytes: int = 0,
+) -> FetchedDocument | None:
+    """Download a page again only if the website says that it changed since the version described by ``validators``.
+
+    The request is made with the same checks as ``fetch_document``. When nothing is known about the version, it is
+    an ordinary download.
+
+    Args:
+        url: The address to download.
+        validators: What the website said about the version that is stored, from an earlier download.
+        timeout: The time limit of one step in seconds. The whole download may take twice as long.
+        max_bytes: The largest web page in bytes.
+        pdf_max_bytes: The largest PDF file in bytes; ``0`` refuses PDF files.
+
+    Returns:
+        The downloaded document, or ``None`` when the website answered that the stored version is still the current
+        one, in which case nothing was downloaded.
+
+    Raises:
+        InvalidURLError: If an address is invalid, uses a disallowed port, has credentials or is not public.
+        FetchError: If the download fails, takes too long, is too large or redirects too often.
+        ExtractionError: If the address leads to something other than a web page or an allowed PDF file.
+    """
+    return _download(url, validators, timeout, max_bytes, pdf_max_bytes)
+
+
+def _download(
+    url: str, validators: Validators, timeout: float, max_bytes: int, pdf_max_bytes: int
+) -> FetchedDocument | None:
+    """Download a page or PDF file, or return ``None`` when a conditional request is answered with 'not modified'."""
     accept = "text/html,application/xhtml+xml" + (",application/pdf;q=0.9" if pdf_max_bytes > 0 else "")
+    conditional = validators.request_headers()
     deadline = time.monotonic() + timeout * TOTAL_TIME_FACTOR
     current = url
     try:
@@ -186,15 +276,18 @@ def fetch_document(
             # settings are ignored because a proxy would do the connecting.
             with httpx.Client(
                 timeout=timeout,
-                headers={"User-Agent": USER_AGENT, "Accept": accept},
+                headers={"User-Agent": USER_AGENT, "Accept": accept, **conditional},
                 trust_env=False,
             ) as client:
                 response = _send_pinned(client, target, addresses, deadline)
                 try:
+                    if conditional and response.status_code == _NOT_MODIFIED:
+                        return None
                     redirect = _redirect_target(response, target)
                     if redirect is None:
                         kind, body = _read_body(response, max_bytes, pdf_max_bytes, deadline)
-                        return FetchedDocument(kind=kind, body=body, url=str(target))
+                        validators_found = _validators_of(response)
+                        return FetchedDocument(kind=kind, body=body, url=str(target), validators=validators_found)
                 finally:
                     response.close()
             current = str(redirect)
@@ -208,6 +301,14 @@ def fetch_document(
         # The library's own wording is for developers; it stays out of the message shown to the user.
         logger.warning("Could not fetch a page from %s: %s", _host_of(url), type(exc).__name__)
         raise FetchError(UNREACHABLE_MESSAGE) from exc
+
+
+def _validators_of(response: httpx.Response) -> Validators:
+    """What the website said about the version of the page it sent."""
+    return Validators(
+        etag=_header_value(response.headers.get("etag")),
+        last_modified=_header_value(response.headers.get("last-modified")),
+    )
 
 
 def _check_target(target: httpx.URL) -> None:
