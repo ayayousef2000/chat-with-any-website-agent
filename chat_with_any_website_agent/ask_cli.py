@@ -25,6 +25,7 @@ from chat_with_any_website_agent.wiring import build_runtime
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from datetime import timedelta
 
     from chat_with_any_website_agent.graph import AgentAnswer
     from chat_with_any_website_agent.ingest import IngestResult
@@ -35,10 +36,22 @@ EXIT_BAD_SETTINGS = 2
 EXIT_SERVICE = 3
 
 
+def _ago(age: timedelta) -> str:
+    """Say how long ago something was, in the largest whole unit: days, hours or minutes."""
+    seconds = int(age.total_seconds())
+    for unit, size in (("day", 86_400), ("hour", 3_600), ("minute", 60)):
+        if seconds >= size:
+            count = seconds // size
+            return f"{count} {unit}{'' if count == 1 else 's'} ago"
+    return "less than a minute ago"
+
+
 def _describe(result: IngestResult, name: str) -> str:
     if result.reused:
-        return f"Reused the stored copy of {name}."
-    return f"Loaded {name} ({result.chunk_count} chunk(s) stored)."
+        loaded = f" (loaded {_ago(result.age)})" if result.age is not None else ""
+        return f"Reused the stored copy of {name}{loaded}."
+    again = " The stored copy was too old, or its age was not known, so it was loaded again." if result.expired else ""
+    return f"Loaded {name} ({result.chunk_count} chunk(s) stored).{again}"
 
 
 def format_answer(
@@ -95,7 +108,9 @@ def _parser() -> argparse.ArgumentParser:
         "--also", action="append", default=[], metavar="URL", help="A further source to search as well; can be repeated"
     )
     parser.add_argument("--tenant", help="The Weaviate tenant to use instead of WEAVIATE_TENANT, for example demo")
-    parser.add_argument("--refresh", action="store_true", help="Download the source again even if it is stored")
+    parser.add_argument(
+        "--refresh", action="store_true", help="Download the source again even if a young copy of it is stored"
+    )
     parser.add_argument("--no-steps", action="store_true", help="Do not list the steps of the agent")
     return parser
 

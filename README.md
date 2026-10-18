@@ -61,12 +61,12 @@ Python 3.14 or newer and [uv](https://docs.astral.sh/uv/). You need your own API
 uv sync                      # create the virtual environment and install the locked dependencies
 cp .env.example .env         # then fill in your own keys; the file is never committed
 uv run agent-smoke --dry-run # show what a check of the three services would do, without calling anything
-uv run agent-smoke --prepare # check the services, and create the Weaviate collection and tenants if missing
+uv run agent-smoke --prepare # check the services, create the Weaviate collection and tenants if missing, and add the field that keeps when a source was loaded
 ```
 
 ## Usage
 
-Ask a question about a page or a PDF file. The source is loaded once and reused for the next questions:
+Ask a question about a page or a PDF file. The source is loaded once and reused for the next questions (use `--refresh` to load it again, or set `SOURCE_MAX_AGE_HOURS` to load a copy again when it gets old):
 
 ```bash
 uv run agent-ask "https://docs.python.org/3/tutorial/controlflow.html" "What does the pass statement do?"
@@ -98,6 +98,7 @@ Settings are read from the environment or from `.env`; `.env.example` lists all 
 | `GROQ_MODEL` | `openai/gpt-oss-120b` | The model that writes the answer |
 | `GROQ_GRADE_MODEL` | `openai/gpt-oss-20b` | The model that grades the excerpts and rewrites queries |
 | `GROQ_BACKUP_API_KEYS` | empty | More Groq keys, separated by commas, used in turn when one reaches its limit |
+| `SOURCE_MAX_AGE_HOURS` | 0 | A stored copy of a source older than this many hours is loaded again; 0 never does that |
 | `AGENT_MAX_STEPS` | 12 | The most graph steps for one question |
 | `AGENT_MAX_LLM_CALLS` | 8 | The most calls to the language model for one question |
 | `AGENT_MAX_REWRITES` | 2 | The most times the query is rewritten |
