@@ -15,6 +15,7 @@ def test_a_new_state_starts_with_the_question_as_the_query_and_the_counters_at_z
         "rewrites": 0,
         "repairs": 0,
         "documents": [],
+        "seen": [],
         "abstained": False,
         "steps": [],
         "llm_calls": 0,

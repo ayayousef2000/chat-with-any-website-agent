@@ -21,6 +21,8 @@ class AgentState(TypedDict, total=False):
         query: The text the search uses. It starts as the question and is replaced when a rewrite is made.
         rewrites: How many times the query was rewritten.
         documents: The excerpts of the latest search, best first.
+        seen: The keys of every excerpt that any search has found so far.
+        fresh: How many excerpts the latest search found that no earlier search had found.
         grade: The verdict on those excerpts.
         answer: The text of the answer, before it was checked.
         repairs: How many times the model was asked to correct a rejected answer.
@@ -37,6 +39,8 @@ class AgentState(TypedDict, total=False):
     query: str
     rewrites: int
     documents: list[Document]
+    seen: list[str]
+    fresh: int
     grade: Grade
     answer: str
     repairs: int
@@ -65,6 +69,7 @@ def new_state(question: str, urls: list[str] | None = None) -> AgentState:
         "rewrites": 0,
         "repairs": 0,
         "documents": [],
+        "seen": [],
         "abstained": False,
         "steps": [],
         "llm_calls": 0,
