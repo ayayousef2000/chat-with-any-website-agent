@@ -1,7 +1,8 @@
 """The command ``agent-ask``: ask a question about a web page or PDF file and see the cited answer and the steps taken.
 
-It loads the source (a stored copy is reused), runs the agent and prints the answer, the excerpts it cites and a line
-for each step the agent took. It uses Cohere, Weaviate and Groq, so it is started by hand.
+It loads the source (a stored copy is reused), runs the agent and prints the answer, the excerpts it cites, the pages
+the agent opened by following links and a line for each step it took. It uses Cohere, Weaviate and Groq, so it is
+started by hand.
 """
 
 import argparse
@@ -101,6 +102,8 @@ def format_answer(
         for citation in answer.citations:
             where = f"{citation.title} > {citation.heading}" if citation.heading else citation.title
             lines.append(f"  [{citation.number}] {where or citation.url} ({citation.url})")
+    if answer.followed:
+        lines += ["", "Pages opened by following links:", *(f"  {url}" for url in answer.followed)]
     if show_steps:
         lines += ["", "Steps:"]
         lines += [f"  {number}. {step}" for number, step in enumerate(answer.steps, start=1)]
@@ -129,6 +132,11 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Use a stored copy without asking the website whether the page changed",
     )
+    parser.add_argument(
+        "--no-follow",
+        action="store_true",
+        help="Stay on the given sources and do not follow links to other pages of the site",
+    )
     parser.add_argument("--no-steps", action="store_true", help="Do not list the steps of the agent")
     return parser
 
@@ -156,7 +164,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     usage = UsageCounter()
     started = time.monotonic()
     try:
-        runtime = build_runtime(settings, usage, tenant=args.tenant)
+        runtime = build_runtime(
+            settings, usage, tenant=args.tenant, follow_links=not args.no_follow, check_followed=not args.no_check
+        )
         try:
             check = not args.no_check
             ingested = runtime.ingestor.ingest(args.url, refresh=args.refresh, check=check)

@@ -62,6 +62,7 @@ def build_runtime(
     *,
     tenant: str | None = None,
     retrier: Retrier | None = None,
+    follow_links: bool = True,
     check_followed: bool = True,
 ) -> AgentRuntime:
     """Connect to the services and build the agent.
@@ -71,6 +72,8 @@ def build_runtime(
         usage: Counts every call and token, and stops a run at its limits.
         tenant: The Weaviate tenant to use instead of the one in the settings, for example ``demo``.
         retrier: How to try again after a Groq limit or outage. The default suits a person who is waiting.
+        follow_links: Whether the agent may follow links to other pages of the site. ``False`` keeps it on the pages
+            it is given, whatever the link limits of the settings are.
         check_followed: Whether to ask the website if a followed page that is already stored changed. An evaluation
             turns it off, so that its answers do not depend on when each page was asked about.
 
@@ -110,7 +113,7 @@ def build_runtime(
         GroqChatModel(answerer),
         GroqChatModel(grader),
         limits,
-        follower,
+        follower if follow_links else None,
     )
     return AgentRuntime(
         agent=agent,

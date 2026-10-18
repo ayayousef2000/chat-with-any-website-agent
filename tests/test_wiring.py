@@ -224,3 +224,12 @@ def test_the_link_limits_come_from_the_settings(monkeypatch: pytest.MonkeyPatch)
     limits = build_runtime(settings, UsageCounter()).agent._limits
 
     assert (limits.max_link_hops, limits.max_pages) == (2, 3)
+
+
+def test_the_agent_stays_on_its_pages_when_following_links_is_switched_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings(monkeypatch)
+    _fakes(monkeypatch)
+
+    runtime = build_runtime(settings, UsageCounter(), follow_links=False)
+
+    assert runtime.agent._links is None
