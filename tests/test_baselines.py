@@ -10,6 +10,7 @@ from langchain_core.documents import Document
 from chat_with_any_website_agent import baselines
 from chat_with_any_website_agent.baselines import PlainSystem, create_crawl_system, create_plain_system
 from chat_with_any_website_agent.chat_model import GroqChatModel
+from chat_with_any_website_agent.cohere_support import COHERE_RETRYABLE
 from chat_with_any_website_agent.crawl import CrawlLimits
 from chat_with_any_website_agent.errors import ExtractionError, FetchError, ServiceBusyError
 from chat_with_any_website_agent.evaluation import Case, Resettable
@@ -293,6 +294,8 @@ def test_the_systems_are_built_without_links_and_with_a_patient_retrier(
     assert call["follow_links"] is False
     assert call["check_followed"] is False
     assert call["retrier"] is not None
+    assert call["cohere_retrier"].retryable == COHERE_RETRYABLE
+    assert call["cohere_retrier"].policy.budget > 45.0
     assert system._crawl == (CrawlLimits(max_pages=7, max_depth=3) if crawls else None)
 
 

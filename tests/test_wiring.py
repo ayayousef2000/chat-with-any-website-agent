@@ -98,7 +98,7 @@ def test_the_services_are_created_from_the_settings_and_share_one_counter(monkey
 
     embedder_args = recorder.created["embedder"][0]
     assert embedder_args[1:] == (settings.cohere_embed_model, settings.cohere_embed_dimension)
-    assert recorder.options["embedder"][0] == {"usage": usage}
+    assert recorder.options["embedder"][0] == {"retrier": None, "usage": usage}
     reranker_args = recorder.created["reranker"][0]
     assert reranker_args[1] == settings.cohere_rerank_model
     assert recorder.options["reranker"][0]["usage"] is usage
@@ -144,6 +144,18 @@ def test_a_retrier_is_passed_on_to_both_groq_clients(monkeypatch: pytest.MonkeyP
     build_runtime(settings, UsageCounter(), retrier=retrier)
 
     assert [options["retrier"] for options in recorder.options["groq"]] == [retrier, retrier]
+
+
+def test_a_cohere_retrier_is_passed_on_to_the_embedder_and_the_reranker(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings(monkeypatch)
+    recorder = _fakes(monkeypatch)
+    retrier = Retrier(retryable=(ValueError,))
+
+    build_runtime(settings, UsageCounter(), cohere_retrier=retrier)
+
+    assert recorder.options["embedder"][0]["retrier"] is retrier
+    assert recorder.options["reranker"][0]["retrier"] is retrier
+    assert [options["retrier"] for options in recorder.options["groq"]] == [None, None]  # Groq has its own
 
 
 def test_the_agent_gets_the_limits_of_the_settings(monkeypatch: pytest.MonkeyPatch) -> None:

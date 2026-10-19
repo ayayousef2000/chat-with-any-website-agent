@@ -69,6 +69,7 @@ def build_runtime(
     *,
     tenant: str | None = None,
     retrier: Retrier | None = None,
+    cohere_retrier: Retrier | None = None,
     follow_links: bool = True,
     check_followed: bool = True,
 ) -> AgentRuntime:
@@ -79,6 +80,8 @@ def build_runtime(
         usage: Counts every call and token, and stops a run at its limits.
         tenant: The Weaviate tenant to use instead of the one in the settings, for example ``demo``.
         retrier: How to try again after a Groq limit or outage. The default suits a person who is waiting.
+        cohere_retrier: How to try again after a Cohere limit or outage, for embedding and reranking. The default
+            suits a person who is waiting.
         follow_links: Whether the agent may follow links to other pages of the site. ``False`` keeps it on the pages
             it is given, whatever the link limits of the settings are.
         check_followed: Whether to ask the website if a followed page that is already stored changed. An evaluation
@@ -91,12 +94,17 @@ def build_runtime(
         StoreError: If the Weaviate collection exists but is not multi-tenant.
     """
     embedder = CohereEmbedder(
-        settings.cohere_api_key, settings.cohere_embed_model, settings.cohere_embed_dimension, usage=usage
+        settings.cohere_api_key,
+        settings.cohere_embed_model,
+        settings.cohere_embed_dimension,
+        retrier=cohere_retrier,
+        usage=usage,
     )
     reranker = CohereReranker(
         settings.cohere_api_key,
         settings.cohere_rerank_model,
         throttle=Throttle(settings.cohere_rerank_requests_per_minute, RERANK_WINDOW_SECONDS),
+        retrier=cohere_retrier,
         usage=usage,
     )
     store = WeaviateStore.connect(

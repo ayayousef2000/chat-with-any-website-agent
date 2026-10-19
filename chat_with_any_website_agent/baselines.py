@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from langchain_core.output_parsers import StrOutputParser
 
 from chat_with_any_website_agent.citations import format_excerpts
+from chat_with_any_website_agent.cohere_support import patient_cohere_retrier
 from chat_with_any_website_agent.crawl import CrawlLimits, crawl_site
 from chat_with_any_website_agent.evaluation import Outcome
 from chat_with_any_website_agent.graph import NO_ANSWER_REASON, NO_EXCERPTS_REASON
@@ -116,7 +117,14 @@ def create_plain_system(settings: Settings, usage: UsageCounter) -> PlainSystem:
     Returns:
         The system. Its Groq calls wait for a limit to lift instead of giving up early.
     """
-    runtime = build_runtime(settings, usage, retrier=patient_retrier(), follow_links=False, check_followed=False)
+    runtime = build_runtime(
+        settings,
+        usage,
+        retrier=patient_retrier(),
+        cohere_retrier=patient_cohere_retrier(),
+        follow_links=False,
+        check_followed=False,
+    )
     return PlainSystem(runtime)
 
 
@@ -130,5 +138,12 @@ def create_crawl_system(settings: Settings, usage: UsageCounter) -> PlainSystem:
     Returns:
         The system. The pages are loaded when the first question about a source is prepared, and that cost is counted.
     """
-    runtime = build_runtime(settings, usage, retrier=patient_retrier(), follow_links=False, check_followed=False)
+    runtime = build_runtime(
+        settings,
+        usage,
+        retrier=patient_retrier(),
+        cohere_retrier=patient_cohere_retrier(),
+        follow_links=False,
+        check_followed=False,
+    )
     return PlainSystem(runtime, crawl=CrawlLimits(settings.eval_crawl_max_pages, settings.eval_crawl_max_depth))
