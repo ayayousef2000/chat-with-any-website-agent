@@ -7,6 +7,7 @@ still answered. A busy service or a reached limit does stop the run, because the
 import logging
 from typing import TYPE_CHECKING
 
+from chat_with_any_website_agent.cohere_support import patient_cohere_retrier
 from chat_with_any_website_agent.errors import ExtractionError, FetchError, InvalidURLError
 from chat_with_any_website_agent.evaluation import Outcome
 from chat_with_any_website_agent.groq_client import patient_retrier
@@ -96,7 +97,10 @@ def create_agent_system(settings: Settings, usage: UsageCounter) -> AgentSystem:
     Returns:
         The system. Its Groq calls wait for a limit to lift instead of giving up early.
     """
-    return AgentSystem(build_runtime(settings, usage, retrier=patient_retrier(), check_followed=False))
+    runtime = build_runtime(
+        settings, usage, retrier=patient_retrier(), cohere_retrier=patient_cohere_retrier(), check_followed=False
+    )
+    return AgentSystem(runtime)
 
 
 def create_single_page_agent_system(settings: Settings, usage: UsageCounter) -> AgentSystem:
@@ -112,5 +116,12 @@ def create_single_page_agent_system(settings: Settings, usage: UsageCounter) -> 
     Returns:
         The system. Its Groq calls wait for a limit to lift instead of giving up early.
     """
-    runtime = build_runtime(settings, usage, retrier=patient_retrier(), follow_links=False, check_followed=False)
+    runtime = build_runtime(
+        settings,
+        usage,
+        retrier=patient_retrier(),
+        cohere_retrier=patient_cohere_retrier(),
+        follow_links=False,
+        check_followed=False,
+    )
     return AgentSystem(runtime)

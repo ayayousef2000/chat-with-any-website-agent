@@ -7,6 +7,7 @@ import pytest
 
 from chat_with_any_website_agent import agent_system
 from chat_with_any_website_agent.agent_system import AgentSystem, create_agent_system
+from chat_with_any_website_agent.cohere_support import COHERE_RETRYABLE
 from chat_with_any_website_agent.errors import ExtractionError, FetchError, InvalidURLError, ServiceBusyError
 from chat_with_any_website_agent.evaluation import Case, Outcome
 from chat_with_any_website_agent.graph import AgentAnswer
@@ -192,6 +193,9 @@ def test_the_system_for_a_run_is_built_with_a_patient_retrier(monkeypatch: pytes
     assert isinstance(call["retrier"], Retrier)
     assert call["retrier"].retryable == GROQ_RETRYABLE
     assert call["retrier"].policy.budget > 45.0
+    assert isinstance(call["cohere_retrier"], Retrier)
+    assert call["cohere_retrier"].retryable == COHERE_RETRYABLE
+    assert call["cohere_retrier"].policy.budget > 45.0
     assert call["check_followed"] is False  # the pages of one run are not asked about again while it goes on
 
 
@@ -212,6 +216,8 @@ def test_the_agent_without_links_is_built_without_the_ability_to_follow_them(mon
     assert options["follow_links"] is False
     assert options["check_followed"] is False
     assert isinstance(options["retrier"], Retrier)
+    assert isinstance(options["cohere_retrier"], Retrier)
+    assert options["cohere_retrier"].policy.budget > 45.0
     assert SYSTEMS["agent-single"] is agent_system.create_single_page_agent_system
 
 

@@ -6,9 +6,15 @@ import cohere
 import pytest
 from pydantic import SecretStr
 
-from chat_with_any_website_agent.cohere_support import close_client
+from chat_with_any_website_agent.cohere_support import (
+    COHERE_RETRYABLE,
+    close_client,
+    default_retrier,
+    patient_cohere_retrier,
+)
 from chat_with_any_website_agent.embeddings import CohereEmbedder
 from chat_with_any_website_agent.reranking import CohereReranker
+from chat_with_any_website_agent.retrying import RetryPolicy
 
 
 class ContextClient:
@@ -22,6 +28,22 @@ class ContextClient:
 
     def __exit__(self, *details: Any) -> None:
         self.left.append(details)
+
+
+def test_a_patient_retrier_waits_for_a_limit_to_lift_longer_than_the_default() -> None:
+    retrier = patient_cohere_retrier()
+
+    assert retrier.retryable == COHERE_RETRYABLE
+    assert retrier.policy == RetryPolicy(attempts=6, base_delay=10.0, max_delay=60.0, budget=300.0)
+    assert retrier.policy.budget > default_retrier().policy.budget
+
+
+def test_the_patient_retrier_pauses_for_a_minute_at_most_and_gives_up_within_its_budget() -> None:
+    retrier = patient_cohere_retrier()
+    pauses = [min(retrier.policy.base_delay * 2 ** (attempt - 1), retrier.policy.max_delay) for attempt in range(1, 6)]
+
+    assert pauses == [10.0, 20.0, 40.0, 60.0, 60.0]
+    assert sum(pauses) * 1.25 <= retrier.policy.budget  # even with the whole random spread added
 
 
 def test_closing_a_client_leaves_its_with_statement() -> None:
