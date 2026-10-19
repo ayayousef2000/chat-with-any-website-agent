@@ -2,9 +2,9 @@
 
 An agentic RAG workflow built with [LangGraph](https://langchain-ai.github.io/langgraph/) and LangChain. It answers questions about a web page or a PDF file with cited sources. It grades what it finds, searches again with a better query when the evidence is not enough, checks its own citations, and says that the source does not cover the question instead of inventing an answer.
 
-This is the agent version of [Chat With Any Website](https://github.com/ayayousef2000/chat-with-any-website), which answers questions about one page or PDF with a fixed pipeline. This project is separate: it has its own repository, API keys and vector database, and it copies modules from the original instead of importing them.
+This is the agent version of [Chat With Any Website](https://github.com/ayayousef2000/chat-with-any-website), which answers questions about one page or PDF with a fixed pipeline. It is a separate project with its own repository, keys and vector database.
 
-> **Status.** The single-source agent works and is evaluated (see [Results](#results)). Following links to other pages of the same site is built but not measured yet: the results below were measured before it existed.
+> **Status.** Working, and evaluated on a small question set (see [Results](#results)). The agent reads the page or PDF it is given and, when that is not enough, follows links to other pages of the same site.
 
 ## How it works
 
@@ -21,7 +21,7 @@ When the excerpts are not enough, the graph first tries `choose` â†’ `follow` â†
 
 - **Retrieve.** A hybrid search (keywords and vectors) in Weaviate, then a Cohere rerank keeps the best few excerpts.
 - **Grade.** A small model decides whether the excerpts are enough to answer, and says what is missing when they are not.
-- **Follow links.** When the pages read so far are not enough, a small model is shown a short numbered list of the links of the pages that were not opened yet (the ones that share words with the question first) and chooses at most two by number, so it can only choose among links the page really has. Plain code decides which links may be offered at all: the same site only, standard web addresses, no files that cannot be read, and only pages that the site's `robots.txt` allows. The chosen pages are loaded like any source and searched together with the first page. At most `AGENT_MAX_LINK_HOPS` rounds and `AGENT_MAX_PAGES` pages for one question.
+- **Follow links.** When the pages read so far are not enough, a small model is shown a numbered list of the links on them and picks at most two by number, so it can only choose links the page really has. Only links to the same site are offered, and only pages that the site's `robots.txt` allows are opened. The new pages are loaded like any source and searched together with the first one, within `AGENT_MAX_LINK_HOPS` rounds and `AGENT_MAX_PAGES` pages for a question.
 - **Rewrite and retry.** When the evidence is weak, the query is rewritten and searched again, within a limit. A new search that finds nothing the agent has not already seen ends the question, because the same excerpts would get the same grade.
 - **Generate and verify.** A larger model writes the answer and cites the excerpts as `[1]`, `[2]`. Plain code then checks that every cited excerpt exists and that each cited sentence shares its content words with it. A rejected answer is corrected once.
 - **Abstain.** When the source does not cover the question, the answer says so and gives the reason.
@@ -33,7 +33,7 @@ Also included:
 - **PDF reading** page by page, with the page number in the excerpt heading.
 - **Safe fetching.** Only public addresses on the standard ports are fetched, every redirect is checked again, and size and time limits apply.
 - **Several languages.** The questions and the sources can be in different languages (the evaluation includes Arabic).
-- **Free-plan friendly.** Calls and tokens are counted, a per-key pace keeps requests within the limits of a plan, and a request that reaches a limit moves to the next Groq key when more than one is listed.
+- **Free-plan friendly.** Calls and tokens are counted, and requests are paced to stay within the limits of a plan.
 
 ## Results
 
@@ -46,13 +46,13 @@ The agent was evaluated on 24 questions over public sources: pages of the Python
 | PDF, facts from a given page | 3 | 3 |
 | Arabic | 2 | 2 |
 | Unanswerable (the right answer is that the source does not cover it) | 5 | 5 |
-| **Multi-page** (the answer is on a page linked from the start page) | 6 | **0** |
-| **All** | 24 | **17 of 23 judged (74%)** |
+| **Multi-page** (the answer is on a page linked from the start page) | 6 | 6 |
+| **All** | 24 | **23 of 23 judged** |
 
 - Every answer was judged faithful to its excerpts.
-- The multi-page questions fail because the agent reads one source and does not follow links yet. It searches, finds only the list of chapters, retries and then says that the source does not cover the question. This is the gap the next step is meant to close.
-- A question costs about 4,800 Groq tokens on average. An answer needs 2 model calls. A question the source cannot answer needs 5, because of the retries.
-- Known limits: the check of the citations compares words, so an answer can still add a detail that the source does not state. A check by a model is planned.
+- The multi-page questions start from the Python tutorial index, which is only a list of chapters. The agent finds that this is not enough and opens the pages that look relevant. Without link following, the same agent answers none of them. This row was measured after link following was added; the other rows were measured before and have not been run again.
+- A question costs about 4,800 Groq tokens on average. A question that needs links takes 4 to 6 model calls and about 6,000 to 9,000 tokens, and a question the source cannot answer takes 5 calls, because of the retries.
+- Known limits: the check of the citations compares words, so an answer can still add a detail that the source does not state. The agent does not always open the best page first (it sometimes picks the language reference over the tutorial chapter), but it still found the answer in every multi-page question.
 
 ## Requirements
 
@@ -64,18 +64,18 @@ Python 3.14 or newer and [uv](https://docs.astral.sh/uv/). You need your own API
 uv sync                      # create the virtual environment and install the locked dependencies
 cp .env.example .env         # then fill in your own keys; the file is never committed
 uv run agent-smoke --dry-run # show what a check of the three services would do, without calling anything
-uv run agent-smoke --prepare # check the services, create the Weaviate collection and tenants if missing, and add the fields that keep when a source was loaded, which version of the page it is and its links
+uv run agent-smoke --prepare # check the services and create or update the Weaviate collection and tenants
 ```
 
 ## Usage
 
-Ask a question about a page or a PDF file. The source is loaded once and stored. At the next questions the website is asked whether the page changed (a very small request), and the stored copy is used if it did not; if the page changed, the copy is made again, so the answer is based on the page as it is when you ask:
+Ask a question about a page or a PDF file. The source is stored the first time it is loaded, and a stored page is loaded again when it changes:
 
 ```bash
-uv run agent-ask "https://docs.python.org/3/tutorial/controlflow.html" "What does the pass statement do?"
+uv run agent-ask "https://docs.python.org/3/tutorial/index.html" "What does the pass statement do?"
 ```
 
-It prints the answer, the sources it cites, the pages it opened by following links, every step the agent took and what the question cost. If the page you give does not hold the answer, the agent looks at the links of the page and opens the ones that look relevant, on the same site only. Useful options:
+It prints the answer, the sources it cites, the pages it opened by following links, every step the agent took and what the question cost. Useful options:
 
 - `--also URL` searches a further source as well; it can be repeated.
 - `--no-follow` stays on the given sources and does not follow links.
@@ -94,16 +94,7 @@ uv run agent-eval summary eval/results.json        # read saved results; no serv
 
 A run stops cleanly at the limits of calls and tokens in the settings, and `--resume` continues it. Results are saved after every question and include how the agent got to each answer.
 
-Four systems can be scored with `--system`, so that the agent is compared with simpler ways of answering from the same retriever, the same answer model and the same prompt:
-
-| System | What it does |
-|---|---|
-| `agent` | The full agent: grades, retries, follows links of the same site, checks its citations |
-| `agent-single` | The same agent without the ability to follow links |
-| `plain` | One search over the given pages and one call to the answer model, with no further steps |
-| `crawl` | The plain pipeline over the given pages and the pages around them, loaded first (at most `EVAL_CRAWL_MAX_PAGES` pages, `EVAL_CRAWL_MAX_DEPTH` links deep) |
-
-`--category NAME` answers only the questions of one category (it can be repeated). `--fresh` empties the `eval` tenant first, so that loading pages is part of the cost of a run; it is refused for any other tenant and together with `--resume`.
+`--system` also accepts `agent-single` (the agent without links), `plain` (one search and one answer) and `crawl` (the plain pipeline over a crawled site), to compare the agent with simpler systems. `--category NAME` answers only one category of the set, and `--fresh` empties the `eval` tenant first, so that loading pages is part of the cost.
 
 ## Configuration
 
@@ -136,10 +127,9 @@ The tests use fakes, so they call no external service. Commits follow [Conventio
 
 ## Planned
 
-- Following same-site links, respecting `robots.txt`, within a limit of hops, to answer the multi-page questions.
 - A check of the answer by a model, to catch claims that the cited excerpt does not support.
+- A better choice of the first link to open.
 - A local web page to try the agent.
-- A comparison with the plain pipeline and with a version that indexes the whole site up front, on the same questions.
 
 ## License
 
