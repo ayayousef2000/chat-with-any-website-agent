@@ -45,12 +45,12 @@ The agent was evaluated on 24 questions over public sources: pages of the Python
 | Two sources given | 4 | 4 (one answer could not be judged) |
 | PDF, facts from a given page | 3 | 3 |
 | Arabic | 2 | 2 |
-| Unanswerable (the right answer is that the source does not cover it) | 5 | 5 |
+| Unanswerable (the right answer is that the source does not cover it) | 5 | 4 |
 | **Multi-page** (the answer is on a page linked from the start page) | 6 | 6 |
-| **All** | 24 | **23 of 23 judged** |
+| **All** | 24 | **22 of 23 judged** |
 
-- Every answer was judged faithful to its excerpts.
-- The multi-page questions start from the Python tutorial index, which is only a list of chapters. The agent finds that this is not enough and opens the pages that look relevant. Without link following, the same agent answers none of them. This row was measured after link following was added; the other rows were measured before and have not been run again.
+- All answers were judged faithful to their excerpts except one: asked how many exceptions Python has, the agent counted the lines of a tree in an excerpt and answered 68. No page states that number, so the right answer was that the source does not cover it. The other four unanswerable questions were refused.
+- The multi-page questions start from the Python tutorial index, which is only a list of chapters. The agent finds that this is not enough and opens the pages that look relevant. Without link following, the same agent answers none of them. The multi-page and unanswerable rows were measured after link following was added; the other rows were measured before and have not been run again.
 - A question costs about 4,800 Groq tokens on average. A question that needs links takes 4 to 6 model calls and about 6,000 to 9,000 tokens, and a question the source cannot answer takes 5 calls, because of the retries.
 - Known limits: the check of the citations compares words, so an answer can still add a detail that the source does not state. The agent does not always open the best page first (it sometimes picks the language reference over the tutorial chapter), but it still found the answer in every multi-page question.
 
