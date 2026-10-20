@@ -255,5 +255,7 @@ def test_the_runtime_gives_the_parts_that_the_baselines_share_with_the_agent(mon
 
     assert runtime.retriever is runtime.agent._retriever
     assert runtime.answer_model is not None
+    assert runtime.answer_model._client is runtime.chats[0]  # the large model
+    assert runtime.grade_model._client is runtime.chats[1]  # the small one, which also rewrites follow-ups
     assert isinstance(runtime.follower, LinkFollower)
     assert runtime.agent._links is runtime.follower  # the agent follows links with the same follower
