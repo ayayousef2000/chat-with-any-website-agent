@@ -45,6 +45,28 @@ updates:
       github-actions:
         patterns: ["*"]
 
+  # Keeps the pinned base images of the Dockerfile current.
+  - package-ecosystem: docker
+    directory: /
+    target-branch: develop
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: build
+      include: scope
+    labels:
+      - dependencies
+      - docker
+    groups:
+      docker-images:
+        patterns: ["*"]
+
   # Keeps the hook versions in .pre-commit-config.yaml current.
   - package-ecosystem: pre-commit
     directory: /
