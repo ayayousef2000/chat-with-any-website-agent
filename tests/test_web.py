@@ -70,10 +70,19 @@ class FakeModel:
 class FakeStore:
     """Knows whether a source is stored and what its title is, and records what was deleted."""
 
-    def __init__(self, stored: bool = True, title: str | None = "Stored Title") -> None:
+    def __init__(self, stored: bool = True, title: str | None = "Stored Title", chunks: int = 0) -> None:
         self.stored = stored
         self.title = title
+        self.chunks = chunks
+        self.cleared = 0
         self.deleted: list[str] = []
+
+    def count_chunks(self) -> int:
+        return self.chunks
+
+    def clear(self) -> None:
+        self.cleared += 1
+        self.chunks = 0
 
     def has_source(self, url: str) -> bool:
         return self.stored
@@ -125,21 +134,27 @@ class FakeRuntime:
         self.closed = True
 
 
-def _settings(monkeypatch: pytest.MonkeyPatch) -> Settings:
+def _settings(monkeypatch: pytest.MonkeyPatch, **overrides: str) -> Settings:
+    # The limits per visitor are off unless a test asks for them, so that the other tests can ask freely.
     for name, value in {
         "COHERE_API_KEY": "cohere-secret-key",
         "WEAVIATE_URL": "https://example.weaviate.cloud",
         "WEAVIATE_API_KEY": "weaviate-secret-key",
         "GROQ_API_KEY": GROQ_KEY,
+        "RATE_LIMIT_ENABLED": "false",
+        **overrides,
     }.items():
         monkeypatch.setenv(name, value)
     return Settings(_env_file=None)  # type: ignore[call-arg]
 
 
 def _client(
-    monkeypatch: pytest.MonkeyPatch, runtime: FakeRuntime | None = None
+    monkeypatch: pytest.MonkeyPatch, runtime: FakeRuntime | None = None, /, **env: str
 ) -> tuple[TestClient, FakeRuntime, list[UsageCounter]]:
-    """A client of an application whose services are fakes, and the counters it was opened with."""
+    """A client of an application whose services are fakes, and the counters it was opened with.
+
+    ``env`` gives settings for the application, such as ``WEB_ALLOWED_HOSTS``.
+    """
     runtime = runtime or FakeRuntime()
     opened: list[UsageCounter] = []
 
@@ -147,7 +162,7 @@ def _client(
         opened.append(usage)
         return runtime
 
-    app = create_app(_settings(monkeypatch), open_runtime=open_runtime)
+    app = create_app(_settings(monkeypatch, **env), open_runtime=open_runtime)
     return TestClient(app, base_url="http://127.0.0.1:8000"), runtime, opened
 
 
@@ -303,6 +318,7 @@ def test_a_second_question_while_one_is_running_is_refused_and_costs_nothing(mon
 
     assert response.status_code == 429
     assert response.json() == {"detail": BUSY_MESSAGE}
+    assert response.headers["retry-after"] == "5"
     assert opened == []
     assert not runtime.ingested
 
@@ -546,7 +562,9 @@ def test_the_loopback_names_are_allowed(monkeypatch: pytest.MonkeyPatch, host: s
     assert client.get("/api/health", headers={"host": host}).status_code == 200
 
 
-@pytest.mark.parametrize("host", ["evil.example", "evil.example:8000", "192.168.1.5:8000", "127.0.0.1.evil.example"])
+@pytest.mark.parametrize(
+    "host", ["evil.example", "evil.example:8000", "192.168.1.5:8000", "127.0.0.1.evil.example", "[::1", ""]
+)
 def test_a_request_for_another_name_is_refused(monkeypatch: pytest.MonkeyPatch, host: str) -> None:
     client, _, opened = _client(monkeypatch)
 
@@ -695,6 +713,189 @@ def test_the_page_files_have_no_carriage_returns_or_leftovers_of_the_original_pr
         assert "\r" not in text
         assert "tests/js" not in text
         assert "module.exports" not in text
+
+
+# --- hosting: names, health check, visitors and the size of the store ---
+
+HOSTED = {"WEB_ALLOWED_HOSTS": "my-agent.onrender.com, Other.Example"}
+
+
+def test_a_hosted_server_answers_to_its_own_names_and_still_to_this_computer(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _, _ = _client(monkeypatch, **HOSTED)
+
+    for host in ("my-agent.onrender.com", "other.example", "OTHER.example:443", "127.0.0.1:8000", "localhost"):
+        assert client.get("/", headers={"host": host}).status_code == 200, host
+
+
+def test_a_hosted_server_still_refuses_every_other_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _, opened = _client(monkeypatch, **HOSTED)
+
+    for host in ("evil.example", "my-agent.onrender.com.evil.example", "agent.onrender.com"):
+        assert client.post("/api/ask", json=BODY, headers={"host": host}).status_code == 403, host
+    assert opened == []
+
+
+def test_a_server_that_is_not_hosted_does_not_answer_to_a_hosting_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _, _ = _client(monkeypatch)
+
+    assert client.get("/", headers={"host": "my-agent.onrender.com"}).status_code == 403
+
+
+def test_a_hosted_server_accepts_a_request_from_its_own_page_and_refuses_one_from_another(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _, _ = _client(monkeypatch, **HOSTED)
+    host = {"host": "my-agent.onrender.com"}
+
+    own = client.post("/api/ask", json=BODY, headers={**host, "origin": "https://my-agent.onrender.com"})
+    other = client.post("/api/ask", json=BODY, headers={**host, "origin": "https://evil.example"})
+
+    assert (own.status_code, other.status_code) == (200, 403)
+
+
+def test_the_health_check_of_the_host_is_answered_whatever_address_it_comes_to(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _, opened = _client(monkeypatch)
+
+    response = client.get("/api/health", headers={"host": "10.1.2.3:10000"})
+
+    assert (response.status_code, response.json()) == (200, {"status": "ok"})
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert opened == []  # it calls no outside service
+
+
+def test_the_health_check_exempts_nothing_else(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _, _ = _client(monkeypatch)
+
+    assert client.get("/", headers={"host": "10.1.2.3:10000"}).status_code == 403
+
+
+def test_a_visitor_over_the_limit_of_questions_is_told_how_long_to_wait_and_costs_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, runtime, opened = _client(monkeypatch, RATE_LIMIT_ENABLED="true", RATE_LIMIT_ASKS_PER_MINUTE="2")
+    assert [client.post("/api/ask", json=BODY).status_code for _ in range(2)] == [200, 200]
+
+    response = client.post("/api/ask", json=BODY)
+
+    assert response.status_code == 429
+    assert response.json()["detail"].startswith("You're asking questions too quickly. Please try again in about ")
+    assert 1 <= int(response.headers["retry-after"]) <= 60
+    assert len(opened) == 2  # the refused question opened no service
+    assert len(runtime.asked) == 2
+
+
+def test_loading_and_deleting_share_one_limit_and_do_not_use_up_questions(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _, opened = _client(monkeypatch, RATE_LIMIT_ENABLED="true", RATE_LIMIT_LOADS_PER_HOUR="2")
+    assert client.post("/api/ingest", json={"url": URL}).status_code == 200
+    assert client.delete("/api/page", params={"url": URL}).status_code == 200
+
+    loading = client.post("/api/ingest", json={"url": URL})
+    deleting = client.delete("/api/page", params={"url": URL})
+    asking = client.post("/api/ask", json=BODY)
+
+    assert (loading.status_code, deleting.status_code, asking.status_code) == (429, 429, 200)
+    assert "loaded a lot of pages" in loading.json()["detail"]
+    assert len(opened) == 3
+
+
+def test_the_limits_can_be_switched_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _, _ = _client(monkeypatch, RATE_LIMIT_ENABLED="false", RATE_LIMIT_ASKS_PER_MINUTE="1")
+
+    assert [client.post("/api/ask", json=BODY).status_code for _ in range(5)] == [200] * 5
+
+
+def test_the_stored_sources_are_deleted_when_more_chunks_are_stored_than_the_limit_allows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = FakeStore(chunks=101)
+    client, runtime, _ = _client(monkeypatch, FakeRuntime(store=store), WEB_MAX_STORED_CHUNKS="100")
+
+    client.post("/api/ingest", json={"url": URL})
+
+    assert store.cleared == 1
+    assert runtime.ingested == [(URL, False, True)]  # and the page is then loaded as usual
+
+
+def test_a_question_makes_room_too_and_the_source_is_loaded_again_for_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    store = FakeStore(chunks=500)
+    client, runtime, _ = _client(monkeypatch, FakeRuntime(store=store), WEB_MAX_STORED_CHUNKS="100")
+
+    response = client.post("/api/ask", json=BODY)
+
+    assert response.status_code == 200
+    assert store.cleared == 1
+    assert runtime.asked == [("What does pass do?", [NORMALIZED])]
+
+
+@pytest.mark.parametrize(("chunks", "limit"), [(100, "100"), (5, "100"), (10_000_000, "0")])
+def test_nothing_is_deleted_at_or_under_the_limit_or_when_there_is_no_limit(
+    monkeypatch: pytest.MonkeyPatch, chunks: int, limit: str
+) -> None:
+    store = FakeStore(chunks=chunks)
+    client, _, _ = _client(monkeypatch, FakeRuntime(store=store), WEB_MAX_STORED_CHUNKS=limit)
+
+    client.post("/api/ingest", json={"url": URL})
+    client.post("/api/ask", json=BODY)
+
+    assert store.cleared == 0
+
+
+def test_the_application_for_a_host_is_built_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name, value in {
+        "COHERE_API_KEY": "cohere-secret-key",
+        "WEAVIATE_URL": "https://example.weaviate.cloud",
+        "WEAVIATE_API_KEY": "weaviate-secret-key",
+        "GROQ_API_KEY": GROQ_KEY,
+        "WEAVIATE_TENANT": "production",
+        "WEB_ALLOWED_HOSTS": "my-agent.onrender.com",
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(web, "get_settings", lambda: Settings(_env_file=None))  # type: ignore[call-arg]
+    built: list[dict[str, Any]] = []
+
+    def build_runtime(settings: Settings, usage: UsageCounter, **options: Any) -> FakeRuntime:
+        built.append(options)
+        return FakeRuntime()
+
+    monkeypatch.setattr(web, "build_runtime", build_runtime)
+
+    client = TestClient(web.create_app_from_environment(), base_url="https://my-agent.onrender.com")
+    response = client.post("/api/ask", json=BODY)
+
+    assert response.status_code == 200
+    assert built == [{"tenant": "production"}]
+
+
+def _hosted_environment(monkeypatch: pytest.MonkeyPatch, **more: str) -> None:
+    for name, value in {
+        "COHERE_API_KEY": "cohere-secret-key",
+        "WEAVIATE_URL": "https://example.weaviate.cloud",
+        "WEAVIATE_API_KEY": "weaviate-secret-key",
+        "GROQ_API_KEY": GROQ_KEY,
+        "RATE_LIMIT_ENABLED": "false",
+        **more,
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(web, "get_settings", lambda: Settings(_env_file=None))  # type: ignore[call-arg]
+
+
+def test_render_gives_the_server_its_own_name_so_that_it_answers_to_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    _hosted_environment(monkeypatch, RENDER_EXTERNAL_HOSTNAME=" My-Agent.onrender.com ")
+    client = TestClient(web.create_app_from_environment(), base_url="https://my-agent.onrender.com")
+
+    assert client.get("/").status_code == 200
+    assert client.get("/", headers={"host": "evil.example"}).status_code == 403
+
+
+def test_without_a_name_from_render_or_the_settings_the_server_answers_only_to_this_computer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _hosted_environment(monkeypatch)
+    monkeypatch.delenv("RENDER_EXTERNAL_HOSTNAME", raising=False)
+    client = TestClient(web.create_app_from_environment(), base_url="https://my-agent.onrender.com")
+
+    assert client.get("/").status_code == 403
+    assert client.get("/", headers={"host": "127.0.0.1:8000"}).status_code == 200
 
 
 # --- the default services and the command ---

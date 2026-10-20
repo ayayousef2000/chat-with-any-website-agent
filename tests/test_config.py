@@ -159,6 +159,9 @@ def test_keys_do_not_appear_in_the_text_form_of_the_settings(monkeypatch: pytest
         "EVAL_MAX_GROQ_TOKENS",
         "EVAL_CRAWL_MAX_PAGES",
         "EVAL_CRAWL_MAX_DEPTH",
+        "RATE_LIMIT_ASKS_PER_MINUTE",
+        "RATE_LIMIT_ASKS_PER_DAY",
+        "RATE_LIMIT_LOADS_PER_HOUR",
     ],
 )
 def test_values_that_must_be_positive_reject_zero(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
@@ -245,3 +248,36 @@ def test_get_settings_loads_once(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
         assert get_settings() is get_settings()
     finally:
         get_settings.cache_clear()
+
+
+def test_the_web_server_answers_only_to_this_computer_and_keeps_every_source_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(monkeypatch)
+
+    assert settings.web_allowed_hosts == ""
+    assert settings.web_host_names == frozenset()
+    assert settings.web_max_stored_chunks == 0
+
+
+def test_the_limits_per_visitor_are_on_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings(monkeypatch)
+
+    assert settings.rate_limit_enabled is True
+    assert (settings.rate_limit_asks_per_minute, settings.rate_limit_asks_per_day) == (6, 60)
+    assert settings.rate_limit_loads_per_hour == 20
+
+
+def test_the_names_of_a_hosted_server_are_read_in_lower_case_without_blanks_or_ports(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(monkeypatch, WEB_ALLOWED_HOSTS=" My-Agent.onrender.com , ,other.example:8080,")
+
+    assert settings.web_host_names == frozenset({"my-agent.onrender.com", "other.example"})
+
+
+def test_the_limit_of_stored_chunks_may_be_zero_but_not_negative(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert _settings(monkeypatch, WEB_MAX_STORED_CHUNKS="0").web_max_stored_chunks == 0
+    assert _settings(monkeypatch, WEB_MAX_STORED_CHUNKS="30000").web_max_stored_chunks == 30000
+    with pytest.raises(ValidationError):
+        _settings(monkeypatch, WEB_MAX_STORED_CHUNKS="-1")

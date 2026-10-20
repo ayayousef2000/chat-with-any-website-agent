@@ -55,6 +55,17 @@ class Settings(BaseSettings):
     # A page that was checked less than this many seconds ago is not asked about again; 0 asks at every question.
     source_check_seconds: int = Field(default=0, ge=0)
 
+    # The web server. It answers only to this computer, unless it is hosted: then web_allowed_hosts lists the names it
+    # answers to, separated by commas (a hosting service gives its own, such as name.onrender.com). When more than
+    # web_max_stored_chunks chunks are stored, the stored sources are deleted before the next page is loaded; 0 keeps
+    # them all. Each visitor (told apart by network address) is limited, so that nobody can use up the free plans.
+    web_allowed_hosts: str = ""
+    web_max_stored_chunks: int = Field(default=0, ge=0)
+    rate_limit_enabled: bool = True
+    rate_limit_asks_per_minute: int = Field(default=6, gt=0)
+    rate_limit_asks_per_day: int = Field(default=60, gt=0)
+    rate_limit_loads_per_hour: int = Field(default=20, gt=0)
+
     # Limits for one question
     agent_max_steps: int = Field(default=24, gt=0)  # the most graph nodes run for one question
     agent_max_link_hops: int = Field(default=3, ge=0)  # the most times links are chosen; 0 keeps to the given pages
@@ -82,6 +93,12 @@ class Settings(BaseSettings):
             if candidate and candidate not in keys:
                 keys.append(candidate)
         return tuple(SecretStr(key) for key in keys)
+
+    @property
+    def web_host_names(self) -> frozenset[str]:
+        """The names the web server answers to besides this computer, in lower case, without blanks or ports."""
+        names = (item.strip().lower() for item in self.web_allowed_hosts.split(","))
+        return frozenset(name.rsplit(":", 1)[0] if name.count(":") == 1 else name for name in names if name)
 
     @field_validator("cohere_embed_dimension")
     @classmethod
