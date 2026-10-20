@@ -29,7 +29,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
@@ -57,7 +57,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
@@ -74,19 +74,51 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
       - run: uv build
       - name: Smoke test the built wheel
         run: uv run --no-project --isolated --with dist/*.whl python -c "import chat_with_any_website_agent"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist
           path: dist/
           if-no-files-found: error
           retention-days: 7
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the image
+        run: docker build --tag chat-with-any-website-agent:ci .
+      - name: Smoke test the image
+        run: |
+          docker run --rm --interactive --env COHERE_API_KEY=ci --env WEAVIATE_URL=https://ci.invalid --env WEAVIATE_API_KEY=ci --env GROQ_API_KEY=ci chat-with-any-website-agent:ci python - <<'PY'
+          import importlib.util
+          import os
+
+          from chat_with_any_website_agent.web import STATIC_DIR, create_app_from_environment
+
+          assert (STATIC_DIR / "index.html").is_file(), "the page files are missing from the image"
+          assert os.getuid() != 0, "the image runs as root"
+          for tool in ("pytest", "mypy", "ruff"):
+              assert importlib.util.find_spec(tool) is None, f"{tool} is in the image"
+          create_app_from_environment()  # the settings and the application can be built from the environment
+          print("the image looks right")
+          PY
+      - name: Check that no local or secret files are in the image
+        run: >-
+          docker run --rm chat-with-any-website-agent:ci
+          sh -c 'test "$(ls -A /app)" = ".venv" && test ! -e /app/.venv/.env'
 
   audit:
     name: Dependency audit
@@ -98,7 +130,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
@@ -117,7 +149,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: false
@@ -128,7 +160,7 @@ jobs:
   ci-gate:
     name: CI passed
     if: always()
-    needs: [lint, test, build, audit, workflows]
+    needs: [lint, test, build, docker, audit, workflows]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}

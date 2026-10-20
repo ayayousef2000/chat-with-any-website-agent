@@ -1,0 +1,13 @@
+# Keep secrets and local files out of the build context: everything is left out except what the Dockerfile copies. A list
+# of what is allowed is safer than a list of what is not, because a new local file is left out without being named here.
+*
+
+!pyproject.toml
+!uv.lock
+!README.md
+!LICENSE
+!chat_with_any_website_agent/
+
+# Not needed inside the package
+**/__pycache__/
+**/*.pyc

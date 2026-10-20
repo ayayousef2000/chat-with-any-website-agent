@@ -1,0 +1,177 @@
+[
+  {
+    "url": "https://docs.python.org/3/tutorial/controlflow.html",
+    "questions": [
+      {
+        "question": "What does the pass statement do?",
+        "reference": "The pass statement does nothing.",
+        "must_contain": ["The pass statement does nothing"],
+        "category": "single_page"
+      },
+      {
+        "question": "When is the else clause of a loop not executed?",
+        "reference": "The else clause of a loop is not executed if the loop was terminated by a break.",
+        "must_contain": ["the else clause is not executed if the loop was terminated by a break"],
+        "category": "single_page"
+      },
+      {
+        "question": "What does the pass statement do, and what does list.append do?",
+        "reference": "The pass statement does nothing. The list.append method adds an item to the end of the list.",
+        "must_contain": ["The pass statement does nothing"],
+        "sources": ["https://docs.python.org/3/tutorial/datastructures.html"],
+        "category": "multi_source"
+      },
+      {
+        "question": "What does range() generate, and what is a tuple?",
+        "reference": "range() generates arithmetic progressions. A tuple consists of a number of values separated by commas, and tuples are immutable.",
+        "must_contain": ["It generates arithmetic progressions"],
+        "sources": ["https://docs.python.org/3/tutorial/datastructures.html"],
+        "category": "multi_source"
+      },
+      {
+        "question": "ماذا تفعل عبارة pass في بايثون؟",
+        "reference": "عبارة pass لا تفعل شيئًا.",
+        "must_contain": ["The pass statement does nothing"],
+        "category": "arabic",
+        "language": "ar"
+      }
+    ]
+  },
+  {
+    "url": "https://docs.python.org/3/tutorial/datastructures.html",
+    "questions": [
+      {
+        "question": "What is a set in Python?",
+        "reference": "A set is an unordered collection with no duplicate elements.",
+        "must_contain": ["A set is an unordered collection with no duplicate elements"],
+        "category": "single_page"
+      },
+      {
+        "question": "What is a set, and what does the raise statement do?",
+        "reference": "A set is an unordered collection with no duplicate elements. The raise statement allows the programmer to force a specified exception to occur.",
+        "must_contain": ["A set is an unordered collection with no duplicate elements"],
+        "sources": ["https://docs.python.org/3/tutorial/errors.html"],
+        "category": "multi_source"
+      }
+    ]
+  },
+  {
+    "url": "https://docs.python.org/3/tutorial/errors.html",
+    "questions": [
+      {
+        "question": "What does the finally clause do?",
+        "reference": "The finally clause runs whether or not the try statement produces an exception.",
+        "must_contain": ["The finally clause runs whether or not the try statement produces an exception"],
+        "category": "single_page"
+      },
+      {
+        "question": "What does the finally clause do, and how is a derived class declared?",
+        "reference": "The finally clause runs whether or not the try statement produces an exception. A derived class is declared as class DerivedClassName(BaseClassName):.",
+        "must_contain": ["The finally clause runs whether or not the try statement produces an exception"],
+        "sources": ["https://docs.python.org/3/tutorial/classes.html"],
+        "category": "multi_source"
+      },
+      {
+        "question": "How many exceptions are in Python's built-in exception hierarchy?",
+        "answerable": false,
+        "category": "unanswerable"
+      }
+    ]
+  },
+  {
+    "url": "https://docs.python.org/3/tutorial/index.html",
+    "questions": [
+      {
+        "question": "What does the pass statement do?",
+        "reference": "The pass statement does nothing.",
+        "must_contain": ["The pass statement does nothing"],
+        "category": "multi_page"
+      },
+      {
+        "question": "What does the list method append do?",
+        "reference": "It adds an item to the end of the list, similar to a[len(a):] = [x].",
+        "must_contain": ["Add an item to the end of the list"],
+        "category": "multi_page"
+      },
+      {
+        "question": "Which two kinds of errors does the tutorial distinguish?",
+        "reference": "Syntax errors and exceptions.",
+        "must_contain": ["two distinguishable kinds of errors: syntax errors and exceptions"],
+        "category": "multi_page"
+      },
+      {
+        "question": "What happens automatically when a class defines an __init__() method?",
+        "reference": "Class instantiation automatically invokes __init__() for the newly created class instance.",
+        "must_contain": ["class instantiation automatically invokes __init__()"],
+        "category": "multi_page"
+      },
+      {
+        "question": "What is the syntax for defining a derived class?",
+        "reference": "class DerivedClassName(BaseClassName):",
+        "must_contain": ["class DerivedClassName(BaseClassName):"],
+        "category": "multi_page"
+      },
+      {
+        "question": "How many times is the default value of a function argument evaluated?",
+        "reference": "Only once.",
+        "must_contain": ["The default value is evaluated only once"],
+        "category": "multi_page"
+      },
+      {
+        "question": "What is the price of the official Python certification exam?",
+        "answerable": false,
+        "category": "unanswerable"
+      },
+      {
+        "question": "Which web framework does this tutorial recommend for building websites?",
+        "answerable": false,
+        "category": "unanswerable"
+      }
+    ]
+  },
+  {
+    "url": "https://arxiv.org/pdf/1706.03762",
+    "questions": [
+      {
+        "question": "How many identical layers does the encoder stack have, and what is the output dimension of its layers?",
+        "reference": "The encoder is a stack of N = 6 identical layers, and its layers produce outputs of dimension d_model = 512 (page 3).",
+        "must_contain": ["N = 6"],
+        "category": "pdf_page"
+      },
+      {
+        "question": "How many parallel attention heads does the model use?",
+        "reference": "The model uses h = 8 parallel attention layers, or heads (page 5).",
+        "must_contain": ["h = 8"],
+        "category": "pdf_page"
+      },
+      {
+        "question": "Which optimizer was used for training, and with what beta values?",
+        "reference": "The Adam optimizer with beta1 = 0.9, beta2 = 0.98 and epsilon = 10^-9 (page 7).",
+        "must_contain": ["Adam optimizer"],
+        "category": "pdf_page"
+      },
+      {
+        "question": "How much memory in gigabytes does each GPU used for training have?",
+        "answerable": false,
+        "category": "unanswerable"
+      },
+      {
+        "question": "How much electricity did training the model consume?",
+        "answerable": false,
+        "category": "unanswerable"
+      }
+    ]
+  },
+  {
+    "url": "https://ar.wikipedia.org/wiki/%D8%A8%D8%A7%D9%8A%D8%AB%D9%88%D9%86_(%D9%84%D8%BA%D8%A9_%D8%A8%D8%B1%D9%85%D8%AC%D8%A9)",
+    "questions": [
+      {
+        "question": "من صمم لغة بايثون؟",
+        "reference": "صمم لغة بايثون خيدو فان روسم.",
+        "must_contain": ["خيدو فان روسم", "جيدو فان روسم"],
+        "category": "arabic",
+        "language": "ar"
+      }
+    ]
+  }
+]

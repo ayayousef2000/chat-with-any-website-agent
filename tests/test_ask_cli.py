@@ -1,0 +1,453 @@
+"""Tests of the ``agent-ask`` command, with fakes instead of the agent and the services."""
+
+from datetime import timedelta
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from chat_with_any_website_agent import ask_cli
+from chat_with_any_website_agent.ask_cli import (
+    EXIT_BAD_SETTINGS,
+    EXIT_BAD_SOURCE,
+    EXIT_OK,
+    EXIT_SERVICE,
+    format_answer,
+    main,
+)
+from chat_with_any_website_agent.citations import Citation
+from chat_with_any_website_agent.config import Settings
+from chat_with_any_website_agent.errors import (
+    BudgetExceededError,
+    ExtractionError,
+    FetchError,
+    InvalidURLError,
+    ServiceBusyError,
+)
+from chat_with_any_website_agent.graph import AgentAnswer
+from chat_with_any_website_agent.ingest import IngestResult
+from chat_with_any_website_agent.usage import COHERE, GROQ, UsageCounter
+
+URL = "https://docs.example/control"
+NORMALIZED = f"{URL}/"
+GROQ_KEY = "groq-secret-key"
+CITATION = Citation(number=1, url=URL, title="Control Flow", heading="pass Statements", text="The pass statement.")
+ANSWERED = AgentAnswer(
+    answer="The pass statement does nothing [1].",
+    abstained=False,
+    citations=(CITATION,),
+    steps=("Read the question.", "Wrote an answer."),
+    llm_calls=2,
+)
+ABSTAINED = AgentAnswer(
+    answer="The source does not cover this question, so there is no answer to give from it.",
+    abstained=True,
+    reason="The excerpts do not answer the question.",
+    steps=("Read the question.", "Decided not to answer: The excerpts do not answer the question."),
+)
+
+
+class FakeRuntime:
+    """An agent and an ingestor that record how they were used, and that can fail."""
+
+    def __init__(self, answer: AgentAnswer = ANSWERED, error: BaseException | None = None) -> None:
+        self.answer = answer
+        self.error = error
+        self.closed = False
+        self.ingested: list[tuple[str, bool]] = []
+        self.checks: list[bool] = []  # whether the website was to be asked about a change, for each source
+        self.asked: list[tuple[str, list[str]]] = []
+        self.ingestor = SimpleNamespace(ingest=self._ingest)
+        self.agent = SimpleNamespace(ask=self._ask)
+
+    def _ingest(self, url: str, *, refresh: bool = False, check: bool = True) -> IngestResult:
+        self.ingested.append((url, refresh))
+        self.checks.append(check)
+        if self.error is not None:
+            raise self.error
+        return IngestResult(url=f"{url}/", reused=False, title="Control Flow", chunk_count=4)  # normalized
+
+    def _ask(self, question: str, urls: list[str]) -> AgentAnswer:
+        self.asked.append((question, urls))
+        return self.answer
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _wire(monkeypatch: pytest.MonkeyPatch, runtime: FakeRuntime | None = None) -> tuple[FakeRuntime, list[Any]]:
+    for name, value in {
+        "COHERE_API_KEY": "cohere-secret-key",
+        "WEAVIATE_URL": "https://example.weaviate.cloud",
+        "WEAVIATE_API_KEY": "weaviate-secret-key",
+        "GROQ_API_KEY": GROQ_KEY,
+    }.items():
+        monkeypatch.setenv(name, value)
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    runtime = runtime or FakeRuntime()
+    built: list[Any] = []
+
+    def build_runtime(settings: Settings, usage: UsageCounter, **options: Any) -> FakeRuntime:
+        built.append(options)
+        return runtime
+
+    monkeypatch.setattr(ask_cli, "get_settings", lambda: settings)
+    monkeypatch.setattr(ask_cli, "build_runtime", build_runtime)
+    return runtime, built
+
+
+# --- what is printed ---
+
+
+def test_the_answer_comes_with_its_sources_and_the_steps_of_the_agent() -> None:
+    usage = UsageCounter()
+    usage.record_call(COHERE)
+    usage.record_call(GROQ)
+    usage.record_call(GROQ)
+    usage.record_tokens(GROQ, 1234)
+    ingested = IngestResult(url=NORMALIZED, reused=False, title="Control Flow", chunk_count=4)
+
+    text = format_answer(ingested, ANSWERED, usage, 3.456)
+
+    assert text == "\n".join(
+        [
+            "Loaded the source (4 chunk(s) stored).",
+            "",
+            "The pass statement does nothing [1].",
+            "",
+            "Sources cited:",
+            f"  [1] Control Flow > pass Statements ({URL})",
+            "",
+            "Steps:",
+            "  1. Read the question.",
+            "  2. Wrote an answer.",
+            "",
+            "Cohere calls: 1. Groq calls: 2. Groq tokens: 1234. Time: 3.5 s.",
+        ]
+    )
+
+
+@pytest.mark.parametrize(
+    ("age", "said"),
+    [
+        (timedelta(seconds=20), "loaded less than a minute ago"),
+        (timedelta(minutes=1), "loaded 1 minute ago"),
+        (timedelta(minutes=59, seconds=59), "loaded 59 minutes ago"),
+        (timedelta(hours=1), "loaded 1 hour ago"),
+        (timedelta(hours=23), "loaded 23 hours ago"),
+        (timedelta(days=1, hours=5), "loaded 1 day ago"),
+        (timedelta(days=3), "loaded 3 days ago"),
+        (timedelta(seconds=-5), "loaded less than a minute ago"),  # a clock that is a little behind
+    ],
+)
+def test_the_age_of_a_reused_copy_is_said_in_the_largest_whole_unit(age: timedelta, said: str) -> None:
+    ingested = IngestResult(url=NORMALIZED, reused=True, age=age)
+
+    text = format_answer(ingested, ANSWERED, UsageCounter(), 1.0)
+
+    assert text.startswith(f"Reused the stored copy of the source ({said}).")
+
+
+def test_a_copy_that_was_too_old_is_said_to_have_been_loaded_again() -> None:
+    ingested = IngestResult(url=NORMALIZED, reused=False, chunk_count=4, expired=True)
+
+    text = format_answer(ingested, ANSWERED, UsageCounter(), 1.0)
+
+    assert text.startswith(
+        "Loaded the source (4 chunk(s) stored). "
+        "The stored copy was too old, or its age or version was not known, so it was loaded again."
+    )
+
+
+def test_a_page_that_has_not_changed_is_said_to_have_been_checked() -> None:
+    ingested = IngestResult(url=NORMALIZED, reused=True, age=timedelta(days=2), checked=True)
+
+    text = format_answer(ingested, ANSWERED, UsageCounter(), 1.0)
+
+    assert text.startswith(
+        "Checked the source: the page has not changed since the stored copy was made (loaded 2 days ago)."
+    )
+
+
+def test_a_page_that_changed_is_said_to_have_been_loaded_again() -> None:
+    ingested = IngestResult(url=NORMALIZED, reused=False, chunk_count=4, changed=True)
+
+    text = format_answer(ingested, ANSWERED, UsageCounter(), 1.0)
+
+    assert text.startswith(
+        "The page of the source changed since the stored copy was made, so it was loaded again (4 chunk(s) stored)."
+    )
+
+
+def test_a_page_that_could_not_be_checked_says_why_and_that_the_stored_copy_was_used() -> None:
+    ingested = IngestResult(
+        url=NORMALIZED, reused=True, age=timedelta(hours=5), problem="The website could not be reached."
+    )
+
+    text = format_answer(ingested, ANSWERED, UsageCounter(), 1.0)
+
+    assert text.startswith(
+        "Could not check whether the page of the source changed (The website could not be reached.), "
+        "so the stored copy (loaded 5 hours ago) was used."
+    )
+
+
+def test_the_changes_of_further_sources_are_described_by_their_address() -> None:
+    first = IngestResult(url=NORMALIZED, reused=True)
+    extra = IngestResult(url="https://docs.example/data/", reused=True, age=timedelta(minutes=10), checked=True)
+
+    text = format_answer(first, ANSWERED, UsageCounter(), 1.0, extras=[extra])
+
+    assert (
+        "Checked https://docs.example/data/: the page has not changed since the stored copy was made "
+        "(loaded 10 minutes ago)."
+    ) in text
+
+
+def test_a_stored_source_is_said_to_be_reused() -> None:
+    text = format_answer(IngestResult(url=NORMALIZED, reused=True), ANSWERED, UsageCounter(), 1.0)
+
+    assert text.startswith("Reused the stored copy of the source.")
+
+
+def test_an_abstention_gives_the_reason_and_no_sources() -> None:
+    text = format_answer(IngestResult(url=NORMALIZED, reused=True), ABSTAINED, UsageCounter(), 1.0)
+
+    assert "Reason: The excerpts do not answer the question." in text
+    assert "Sources cited" not in text
+    assert "rejected" not in text
+
+
+def test_an_answer_that_the_check_rejected_is_shown_with_the_reason() -> None:
+    rejected = AgentAnswer(
+        answer=ABSTAINED.answer,
+        abstained=True,
+        reason="The answer cites no excerpt.",
+        draft="The else clause is not run after a break.",
+    )
+
+    text = format_answer(IngestResult(url=NORMALIZED, reused=True), rejected, UsageCounter(), 1.0)
+
+    assert "Reason: The answer cites no excerpt." in text
+    assert "The answer that the check rejected:\n  The else clause is not run after a break." in text
+
+
+def test_the_steps_can_be_left_out() -> None:
+    text = format_answer(IngestResult(url=NORMALIZED, reused=True), ANSWERED, UsageCounter(), 1.0, show_steps=False)
+
+    assert "Steps:" not in text
+
+
+def test_a_source_without_a_section_is_listed_by_its_title() -> None:
+    answer = AgentAnswer(
+        answer="Yes [1].",
+        abstained=False,
+        citations=(Citation(number=1, url=URL, title="Control Flow", heading="", text="t"),),
+    )
+
+    text = format_answer(IngestResult(url=NORMALIZED, reused=True), answer, UsageCounter(), 1.0)
+
+    assert f"  [1] Control Flow ({URL})" in text
+
+
+# --- the command ---
+
+
+def test_the_source_is_loaded_and_the_question_asked_about_it(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runtime, built = _wire(monkeypatch)
+
+    code = main([URL, "What does pass do?"])
+
+    assert code == EXIT_OK
+    assert runtime.ingested == [(URL, False)]
+    assert runtime.asked == [("What does pass do?", [NORMALIZED])]  # the normalized address the source is stored under
+    assert built == [{"tenant": None, "follow_links": True, "check_followed": True}]
+    assert runtime.closed
+    out = capsys.readouterr().out
+    assert "The pass statement does nothing [1]." in out
+    assert "Steps:" in out
+
+
+def test_further_sources_are_loaded_and_searched_too(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runtime, _ = _wire(monkeypatch)
+    other, third = "https://docs.example/data", "https://docs.example/errors"
+
+    code = main([URL, "Which one?", "--also", other, "--also", third, "--refresh"])
+
+    assert code == EXIT_OK
+    assert runtime.ingested == [(URL, True), (other, True), (third, True)]
+    assert runtime.asked == [("Which one?", [NORMALIZED, f"{other}/", f"{third}/"])]
+    out = capsys.readouterr().out
+    assert "Loaded the source (4 chunk(s) stored)." in out
+    assert f"Loaded {other}/ (4 chunk(s) stored)." in out
+    assert f"Loaded {third}/ (4 chunk(s) stored)." in out
+
+
+def test_the_stored_copies_of_further_sources_are_said_to_be_reused() -> None:
+    first = IngestResult(url=NORMALIZED, reused=True)
+    extra = IngestResult(url="https://docs.example/data/", reused=True)
+
+    text = format_answer(first, ANSWERED, UsageCounter(), 1.0, extras=[extra])
+
+    assert text.startswith(
+        "Reused the stored copy of the source.\nReused the stored copy of https://docs.example/data/.\n\n"
+    )
+
+
+def test_the_website_is_asked_about_a_change_unless_told_not_to(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runtime, _ = _wire(monkeypatch)
+    other = "https://docs.example/data"
+
+    main([URL, "Q?", "--also", other])
+    assert runtime.checks == [True, True]
+
+    runtime.checks.clear()
+    main([URL, "Q?", "--also", other, "--no-check"])
+    assert runtime.checks == [False, False]
+    capsys.readouterr()
+
+
+def test_an_abstention_is_not_an_error(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    _wire(monkeypatch, FakeRuntime(ABSTAINED))
+
+    code = main([URL, "Q?"])
+
+    assert code == EXIT_OK
+    assert "Reason: The excerpts do not answer the question." in capsys.readouterr().out
+
+
+def test_the_options_reach_the_runtime_and_the_ingestor(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runtime, built = _wire(monkeypatch)
+
+    main([URL, "Q?", "--tenant", "demo", "--refresh", "--no-steps"])
+
+    assert built == [{"tenant": "demo", "follow_links": True, "check_followed": True}]
+    assert runtime.ingested == [(URL, True)]
+    assert "Steps:" not in capsys.readouterr().out
+
+
+def test_settings_that_are_not_valid_are_named_without_their_values(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def invalid() -> Settings:
+        return Settings(_env_file=None)  # type: ignore[call-arg]
+
+    monkeypatch.setattr(ask_cli, "get_settings", invalid)
+    monkeypatch.setattr(ask_cli, "build_runtime", lambda *args, **options: pytest.fail("no service may be used"))
+
+    code = main([URL, "Q?"])
+
+    assert code == EXIT_BAD_SETTINGS
+    assert "The settings are not valid (COHERE_API_KEY: Field required" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "error",
+    [InvalidURLError("That address is not allowed."), FetchError("Download failed."), ExtractionError("No text.")],
+)
+def test_a_source_that_cannot_be_used_is_reported_and_the_connections_are_closed(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], error: BaseException
+) -> None:
+    runtime, _ = _wire(monkeypatch, FakeRuntime(error=error))
+
+    code = main([URL, "Q?"])
+
+    assert code == EXIT_BAD_SOURCE
+    assert str(error) in capsys.readouterr().err
+    assert runtime.closed
+    assert runtime.asked == []
+
+
+@pytest.mark.parametrize(
+    "error", [ServiceBusyError("Groq is busy.", retry_after=30.0), BudgetExceededError("Limit reached.", "groq", 10)]
+)
+def test_a_busy_service_or_a_reached_limit_is_reported(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], error: BaseException
+) -> None:
+    runtime, _ = _wire(monkeypatch, FakeRuntime(error=error))
+
+    code = main([URL, "Q?"])
+
+    assert code == EXIT_SERVICE
+    assert str(error) in capsys.readouterr().err
+    assert runtime.closed
+
+
+def test_an_unexpected_failure_is_described_without_any_key(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runtime, _ = _wire(monkeypatch, FakeRuntime(error=RuntimeError(f"401 for the key {GROQ_KEY}")))
+
+    code = main([URL, "Q?"])
+
+    err = capsys.readouterr().err
+    assert code == EXIT_SERVICE
+    assert "A service failed: RuntimeError: 401 for the key ***" in err
+    assert GROQ_KEY not in err
+    assert runtime.closed
+
+
+def test_a_service_that_cannot_be_reached_at_the_start_is_reported(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _wire(monkeypatch)
+
+    def unreachable(*args: Any, **options: Any) -> None:
+        raise ConnectionError("Weaviate cannot be reached")
+
+    monkeypatch.setattr(ask_cli, "build_runtime", unreachable)
+
+    code = main([URL, "Q?"])
+
+    assert code == EXIT_SERVICE
+    assert "A service failed: ConnectionError: Weaviate cannot be reached" in capsys.readouterr().err
+
+
+# --- following links ---
+
+
+def test_the_pages_opened_by_following_links_are_listed_before_the_steps() -> None:
+    followed = (f"{URL}/two", f"{URL}/three")
+    answer = AgentAnswer(answer="Yes [1].", abstained=False, citations=(CITATION,), followed=followed, steps=("Step.",))
+    ingested = IngestResult(url=NORMALIZED, reused=False, title="Control Flow", chunk_count=4)
+
+    text = format_answer(ingested, answer, UsageCounter(), 1.0)
+
+    assert f"Pages opened by following links:\n  {URL}/two\n  {URL}/three\n\nSteps:\n  1. Step." in text
+    assert text.index("Sources cited:") < text.index("Pages opened by following links:")
+
+
+def test_no_pages_are_listed_when_none_was_followed() -> None:
+    ingested = IngestResult(url=NORMALIZED, reused=False, title="Control Flow", chunk_count=4)
+
+    assert "Pages opened" not in format_answer(ingested, ANSWERED, UsageCounter(), 1.0)
+
+
+def test_pages_that_were_followed_are_listed_also_when_the_agent_does_not_answer() -> None:
+    answer = AgentAnswer(answer="No.", abstained=True, reason="Not covered.", followed=(f"{URL}/two",))
+    ingested = IngestResult(url=NORMALIZED, reused=False, title="Control Flow", chunk_count=4)
+
+    assert f"Pages opened by following links:\n  {URL}/two" in format_answer(ingested, answer, UsageCounter(), 1.0)
+
+
+def test_following_links_can_be_switched_off_and_the_check_of_followed_pages_follows_no_check(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _, built = _wire(monkeypatch)
+
+    main([URL, "Q?", "--no-follow", "--no-check"])
+    main([URL, "Q?"])
+
+    assert built == [
+        {"tenant": None, "follow_links": False, "check_followed": False},
+        {"tenant": None, "follow_links": True, "check_followed": True},
+    ]
+    capsys.readouterr()
