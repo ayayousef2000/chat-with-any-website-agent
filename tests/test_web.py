@@ -8,6 +8,7 @@ import uvicorn
 from fastapi.testclient import TestClient
 
 from chat_with_any_website_agent import web
+from chat_with_any_website_agent.chat_model import GroqChatModel
 from chat_with_any_website_agent.citations import Citation
 from chat_with_any_website_agent.config import Settings
 from chat_with_any_website_agent.errors import (
@@ -18,6 +19,7 @@ from chat_with_any_website_agent.errors import (
     ServiceBusyError,
 )
 from chat_with_any_website_agent.graph import AgentAnswer
+from chat_with_any_website_agent.groq_client import ChatReply
 from chat_with_any_website_agent.ingest import IngestResult
 from chat_with_any_website_agent.web import BUSY_MESSAGE, EXIT_BAD_SETTINGS, EXIT_OK, create_app, main
 
@@ -45,22 +47,73 @@ ABSTAINED = AgentAnswer(
 BODY = {"url": URL, "question": "What does pass do?"}
 
 
-class FakeRuntime:
-    """An agent and an ingestor that record how they were used, and that can fail."""
+class FakeModel:
+    """The small model: it replies with the rewritten question, fails, or must not be asked at all."""
 
-    def __init__(self, answer: AgentAnswer = ANSWERED, error: BaseException | None = None) -> None:
+    model = "model-x"
+
+    def __init__(self, reply: str | None = None, error: BaseException | None = None) -> None:
+        self.reply = reply
+        self.error = error
+        self.requests: list[Any] = []
+
+    def complete(self, messages: Any, **options: Any) -> ChatReply:
+        self.requests.append(messages)
+        if self.error is not None:
+            raise self.error
+        if self.reply is None:
+            raise AssertionError("The small model was asked, but the test expected no rewrite.")
+        return ChatReply(text=self.reply, prompt_tokens=10, completion_tokens=5, key_number=1)
+
+
+class FakeStore:
+    """Knows whether a source is stored and what its title is, and records what was deleted."""
+
+    def __init__(self, stored: bool = True, title: str | None = "Stored Title") -> None:
+        self.stored = stored
+        self.title = title
+        self.deleted: list[str] = []
+
+    def has_source(self, url: str) -> bool:
+        return self.stored
+
+    def delete_source(self, url: str) -> None:
+        self.deleted.append(url)
+
+    def source_title(self, url: str) -> str | None:
+        return self.title
+
+
+class FakeRuntime:
+    """An agent, an ingestor and a store that record how they were used, and that can fail."""
+
+    def __init__(
+        self,
+        answer: AgentAnswer = ANSWERED,
+        error: BaseException | None = None,
+        *,
+        model: FakeModel | None = None,
+        store: FakeStore | None = None,
+        reused: bool = False,
+    ) -> None:
         self.answer = answer
         self.error = error
+        self.reused = reused
         self.closed = False
-        self.ingested: list[tuple[str, bool]] = []
+        self.ingested: list[tuple[str, bool, bool]] = []
         self.asked: list[tuple[str, list[str]]] = []
+        self.model = model or FakeModel()
+        self.store = store or FakeStore()
+        self.grade_model = GroqChatModel(self.model)
         self.ingestor = SimpleNamespace(ingest=self._ingest)
         self.agent = SimpleNamespace(ask=self._ask)
 
     def _ingest(self, url: str, *, refresh: bool = False, check: bool = True) -> IngestResult:
-        self.ingested.append((url, check))
+        self.ingested.append((url, refresh, check))
         if self.error is not None:
             raise self.error
+        if self.reused:
+            return IngestResult(url=f"{url}/", reused=True)
         return IngestResult(url=f"{url}/", reused=False, title="Control Flow", chunk_count=4)  # normalized
 
     def _ask(self, question: str, urls: list[str]) -> AgentAnswer:
@@ -119,7 +172,7 @@ def test_a_question_gets_the_answer_and_the_excerpts_it_cites(monkeypatch: pytes
         ],
     }
     assert runtime.asked == [("What does pass do?", [NORMALIZED])]  # the address the source is stored under
-    assert runtime.ingested == [(URL, True)]  # a stored copy is used after the website was asked if it changed
+    assert runtime.ingested == [(URL, False, True)]  # a stored copy is used after the website was asked if it changed
     assert runtime.closed
     assert len(opened) == 1
 
@@ -283,6 +336,197 @@ def test_a_request_that_is_not_valid_is_refused_before_anything_is_opened(
 
     assert response.status_code == 422
     assert opened == []
+
+
+# --- loading a source ---
+
+
+def test_a_source_is_loaded_and_its_title_and_address_are_given(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, runtime, opened = _client(monkeypatch)
+
+    response = client.post("/api/ingest", json={"url": URL})
+
+    assert response.status_code == 200
+    assert response.json() == {"url": NORMALIZED, "title": "Control Flow"}
+    assert runtime.ingested == [(URL, False, True)]
+    assert runtime.closed
+    assert len(opened) == 1
+
+
+def test_a_source_can_be_loaded_again_whatever_is_stored(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, runtime, _ = _client(monkeypatch)
+
+    client.post("/api/ingest", json={"url": URL, "refresh": True})
+
+    assert runtime.ingested == [(URL, True, True)]
+
+
+def test_the_title_of_a_stored_copy_that_was_reused_is_read_from_the_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _, _ = _client(monkeypatch, FakeRuntime(reused=True))
+
+    assert client.post("/api/ingest", json={"url": URL}).json() == {"url": NORMALIZED, "title": "Stored Title"}
+
+
+def test_a_source_without_a_title_is_named_by_its_site(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = FakeRuntime(reused=True, store=FakeStore(title=None))
+    client, _, _ = _client(monkeypatch, runtime)
+
+    assert client.post("/api/ingest", json={"url": URL}).json()["title"] == "docs.example"
+
+
+def test_a_source_that_cannot_be_loaded_is_reported_when_loading(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, runtime, _ = _client(monkeypatch, FakeRuntime(error=FetchError("Download failed.")))
+
+    response = client.post("/api/ingest", json={"url": URL})
+
+    assert (response.status_code, response.json()) == (400, {"detail": "Download failed."})
+    assert runtime.closed
+
+
+def test_loading_waits_for_what_is_running(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _, opened = _client(monkeypatch)
+    running = client.app.state.service._running  # type: ignore[attr-defined]
+    assert running.acquire(blocking=False)
+
+    response = client.post("/api/ingest", json={"url": URL})
+    running.release()
+
+    assert response.status_code == 429
+    assert opened == []
+
+
+@pytest.mark.parametrize("body", [{"url": ""}, {"url": "u" * 2049}, {}])
+def test_a_request_to_load_that_is_not_valid_is_refused(monkeypatch: pytest.MonkeyPatch, body: dict[str, str]) -> None:
+    client, _, opened = _client(monkeypatch)
+
+    assert client.post("/api/ingest", json=body).status_code == 422
+    assert opened == []
+
+
+# --- deleting the stored copy ---
+
+
+def test_the_stored_copy_of_a_source_is_deleted(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = FakeRuntime()
+    client, _, _ = _client(monkeypatch, runtime)
+
+    response = client.delete("/api/page", params={"url": f"{URL}#section"})
+
+    assert response.json() == {"deleted": True}
+    assert runtime.store.deleted == [URL]  # the address the source is stored under: no fragment
+    assert runtime.closed
+
+
+def test_deleting_a_source_that_is_not_stored_deletes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = FakeRuntime(store=FakeStore(stored=False))
+    client, _, _ = _client(monkeypatch, runtime)
+
+    response = client.delete("/api/page", params={"url": URL})
+
+    assert response.json() == {"deleted": False}
+    assert runtime.store.deleted == []
+
+
+def test_an_address_that_is_not_valid_cannot_be_deleted(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = FakeRuntime()
+    client, _, _ = _client(monkeypatch, runtime)
+
+    response = client.delete("/api/page", params={"url": "ftp://docs.example/file"})
+
+    assert response.status_code == 400
+    assert runtime.store.deleted == []
+
+
+@pytest.mark.parametrize("params", [{}, {"url": ""}, {"url": "u" * 2049}])
+def test_a_request_to_delete_that_is_not_valid_is_refused(
+    monkeypatch: pytest.MonkeyPatch, params: dict[str, str]
+) -> None:
+    client, _, opened = _client(monkeypatch)
+
+    assert client.delete("/api/page", params=params).status_code == 422
+    assert opened == []
+
+
+# --- follow-up questions ---
+
+
+HISTORY = [{"question": "Who wrote it?", "answer": "Guido wrote it [1]."}]
+
+
+def test_a_follow_up_is_rewritten_with_the_earlier_turns_before_the_agent_gets_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = FakeModel("When did Guido start it?")
+    client, runtime, _ = _client(monkeypatch, FakeRuntime(model=model))
+
+    response = client.post("/api/ask", json={**BODY, "question": "When did he start it?", "history": HISTORY})
+
+    assert response.status_code == 200
+    assert runtime.asked == [("When did Guido start it?", [NORMALIZED])]
+    (request,) = model.requests
+    text = " ".join(message["content"] for message in request)
+    assert "Question: Who wrote it?\nAnswer: Guido wrote it." in text  # the citation marker is left out
+    assert "Latest question: When did he start it?" in text
+
+
+def test_a_first_question_is_not_rewritten_and_asks_the_small_model_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, runtime, _ = _client(monkeypatch)  # the small model fails the test if it is asked
+
+    client.post("/api/ask", json=BODY)
+
+    assert runtime.asked == [("What does pass do?", [NORMALIZED])]
+    assert runtime.model.requests == []
+
+
+def test_a_follow_up_is_asked_as_written_when_a_service_is_busy_and_cannot_rewrite_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = FakeModel(error=ServiceBusyError("Groq is busy right now."))
+    client, runtime, _ = _client(monkeypatch, FakeRuntime(model=model))
+
+    response = client.post("/api/ask", json={**BODY, "history": HISTORY})
+
+    assert response.status_code == 200
+    assert runtime.asked == [("What does pass do?", [NORMALIZED])]
+
+
+def test_a_reached_limit_while_rewriting_a_follow_up_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    model = FakeModel(error=BudgetExceededError("Limit.", "groq", 10))
+    client, runtime, _ = _client(monkeypatch, FakeRuntime(model=model))
+
+    response = client.post("/api/ask", json={**BODY, "history": HISTORY})
+
+    assert response.status_code == 429
+    assert runtime.asked == []
+    assert runtime.closed
+
+
+@pytest.mark.parametrize(
+    "history",
+    [
+        HISTORY * 11,  # more turns than the server accepts
+        [{"question": "", "answer": "A."}],
+        [{"question": "Q?", "answer": ""}],
+        [{"question": "q" * 2001, "answer": "A."}],
+        [{"question": "Q?", "answer": "a" * 10001}],
+    ],
+)
+def test_a_history_that_is_not_valid_is_refused(monkeypatch: pytest.MonkeyPatch, history: list[Any]) -> None:
+    client, _, opened = _client(monkeypatch)
+
+    response = client.post("/api/ask", json={**BODY, "history": history})
+
+    assert response.status_code == 422
+    assert opened == []
+
+
+def test_a_history_with_the_most_turns_that_are_accepted_is_answered(monkeypatch: pytest.MonkeyPatch) -> None:
+    model = FakeModel("A question on its own?")
+    client, _, _ = _client(monkeypatch, FakeRuntime(model=model))
+
+    response = client.post("/api/ask", json={**BODY, "history": HISTORY * 10})
+
+    assert response.status_code == 200
 
 
 # --- who may ask ---

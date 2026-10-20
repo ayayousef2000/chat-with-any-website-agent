@@ -42,6 +42,8 @@ class AgentRuntime:
         chats: The Groq clients, which hold connections.
         retriever: Finds the excerpts of the stored sources; the agent uses this one.
         answer_model: The model that writes answers; the agent uses this one.
+        grade_model: The small model that grades, rewrites and chooses links; the agent uses this one. A follow-up
+            question is rewritten with it too.
         follower: Opens the links of stored pages, within the rules of the sites. The agent only uses it when it may
             follow links.
         cohere: The Cohere embedder and reranker, which hold connections.
@@ -53,6 +55,7 @@ class AgentRuntime:
     chats: tuple[GroqClient, ...]
     retriever: SourceRetriever
     answer_model: GroqChatModel
+    grade_model: GroqChatModel
     follower: LinkFollower
     cohere: tuple[CohereEmbedder | CohereReranker, ...] = ()
 
@@ -125,7 +128,8 @@ def build_runtime(
     )
     retriever = SourceRetriever(store, embedder, reranker)
     answer_model = GroqChatModel(answerer)
-    agent = SourceAgent(retriever, answer_model, GroqChatModel(grader), limits, follower if follow_links else None)
+    grade_model = GroqChatModel(grader)
+    agent = SourceAgent(retriever, answer_model, grade_model, limits, follower if follow_links else None)
     return AgentRuntime(
         agent=agent,
         ingestor=ingestor,
@@ -133,6 +137,7 @@ def build_runtime(
         chats=(answerer, grader),
         retriever=retriever,
         answer_model=answer_model,
+        grade_model=grade_model,
         follower=follower,
         cohere=(embedder, reranker),
     )

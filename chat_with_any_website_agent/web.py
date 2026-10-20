@@ -1,13 +1,15 @@
 """The command ``agent-web``: a small web server on this computer, to try the agent in a browser.
 
-``POST /api/ask`` loads a page or PDF file (a stored copy is reused), asks the agent a question about it and answers
-with the text and the excerpts it cites, as the original project's server does. How the agent got there, the pages it
-opened and what the question cost stay in the terminal (``agent-ask``) and are not sent to the browser.
+It has the same three calls as the original project's server. ``POST /api/ingest`` loads a page or PDF file (or loads it
+again) and says its title. ``POST /api/ask`` asks the agent a question about it, with the last few turns of the
+conversation so that a follow-up can be understood, and answers with the text and the excerpts it cites.
+``DELETE /api/page`` deletes the stored copy. How the agent got to an answer, the pages it opened and what the question
+cost stay in the terminal (``agent-ask``) and are not sent to the browser.
 
 Like ``agent-ask``, the server uses Cohere, Weaviate and Groq, so a question is asked by hand. It is for one person on
-one computer: it listens on the loopback address only, answers one question at a time (the free plans have small
-limits) and refuses a request whose ``Host`` or ``Origin`` is not this server, so that a page of another website that
-is open in the same browser cannot ask questions with the keys of the person.
+one computer: it listens on the loopback address only, does one thing at a time (the free plans have small limits) and
+refuses a request whose ``Host`` or ``Origin`` is not this server, so that a page of another website that is open in
+the same browser cannot ask questions with the keys of the person.
 """
 
 import argparse
@@ -18,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field, ValidationError
 
@@ -30,6 +32,8 @@ from chat_with_any_website_agent.errors import (
     InvalidURLError,
     ServiceBusyError,
 )
+from chat_with_any_website_agent.fetching import normalize_url
+from chat_with_any_website_agent.follow_up import Turn, standalone_question
 from chat_with_any_website_agent.smoke import secret_values
 from chat_with_any_website_agent.usage import UsageCounter
 from chat_with_any_website_agent.wiring import build_runtime
@@ -51,8 +55,57 @@ DEFAULT_PORT = 8000
 # The only names this server answers to.
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
-BUSY_MESSAGE = "A question is already being answered. Wait until it is done."
+# More turns than the agent uses are accepted, so that a browser that sends a few extra is not refused.
+MAX_HISTORY_TURNS = 10
+
+BUSY_MESSAGE = "Something is already being done. Wait until it is finished."
 FORBIDDEN_MESSAGE = "This server answers only to pages that it serves itself."
+
+
+class IngestRequest(BaseModel):
+    """A request to load a page or PDF file.
+
+    Attributes:
+        url: The address of the source.
+        refresh: Whether to download it again even if a copy of it is stored and the page has not changed.
+    """
+
+    url: str = Field(min_length=1, max_length=2048)
+    refresh: bool = False
+
+
+class IngestResponse(BaseModel):
+    """A source that is ready for questions.
+
+    Attributes:
+        url: The address the source is stored under.
+        title: The title of the source.
+    """
+
+    url: str
+    title: str
+
+
+class ForgetResponse(BaseModel):
+    """The result of deleting a stored source.
+
+    Attributes:
+        deleted: Whether a stored copy existed.
+    """
+
+    deleted: bool
+
+
+class HistoryTurn(BaseModel):
+    """An earlier question of the conversation and the answer that was given to it.
+
+    Attributes:
+        question: The question.
+        answer: The answer.
+    """
+
+    question: str = Field(min_length=1, max_length=2000)
+    answer: str = Field(min_length=1, max_length=10000)
 
 
 class AskRequest(BaseModel):
@@ -61,10 +114,12 @@ class AskRequest(BaseModel):
     Attributes:
         url: The address of the source.
         question: The question.
+        history: The earlier turns of the conversation, oldest first. Only the last few are used.
     """
 
     url: str = Field(min_length=1, max_length=2048)
     question: str = Field(min_length=1, max_length=2000)
+    history: list[HistoryTurn] = Field(default_factory=list, max_length=MAX_HISTORY_TURNS)
 
 
 class Source(BaseModel):
@@ -97,8 +152,8 @@ class AskResponse(BaseModel):
     sources: list[Source]
 
 
-class AskError(Exception):
-    """A question that could not be answered, with the status and the message for the browser.
+class ServerError(Exception):
+    """A request that could not be done, with the status and the message for the browser.
 
     Attributes:
         status: The HTTP status.
@@ -118,69 +173,118 @@ def _host_name(host: str) -> str:
     return host.rsplit(":", 1)[0] if host.count(":") == 1 else host
 
 
-class QuestionService:
-    """Answers one question at a time."""
+class Service:
+    """Loads sources, answers questions and deletes stored copies, one thing at a time."""
 
     def __init__(self, settings: Settings, open_runtime: Callable[[UsageCounter], AgentRuntime]) -> None:
         """Create the service.
 
         Args:
             settings: The settings, whose keys are never allowed into a message.
-            open_runtime: Connects to the services for one question. It gets the counter of the question, and its
-                result is closed when the question is done.
+            open_runtime: Connects to the services for one request. It gets the counter of the request, and its result
+                is closed when the request is done.
         """
         self._settings = settings
         self._open = open_runtime
         self._running = threading.Lock()
 
+    def ingest(self, request: IngestRequest) -> IngestResponse:
+        """Make a source ready for questions, with the page as it is now.
+
+        Args:
+            request: The source, and whether to load it again whatever is stored.
+
+        Returns:
+            The address the source is stored under and its title.
+
+        Raises:
+            ServerError: If something else is running, the source cannot be loaded, a service is busy or failed, or a
+                limit was reached.
+        """
+
+        def load(runtime: AgentRuntime) -> IngestResponse:
+            result = runtime.ingestor.ingest(request.url, refresh=request.refresh)
+            title = result.title or runtime.store.source_title(result.url) or urlsplit(result.url).hostname
+            return IngestResponse(url=result.url, title=title or result.url)
+
+        return self._guarded(load)
+
     def ask(self, request: AskRequest) -> AskResponse:
         """Load the source if it is not stored and answer the question about it.
 
         Args:
-            request: The question and its source.
+            request: The question, its source and the earlier turns.
 
         Returns:
             The answer and the excerpts it cites.
 
         Raises:
-            AskError: If a question is already running, the source cannot be loaded, a service is busy or failed, or a
+            ServerError: If something else is running, the source cannot be loaded, a service is busy or failed, or a
                 limit was reached.
         """
-        if not self._running.acquire(blocking=False):
-            raise AskError(429, BUSY_MESSAGE)
-        try:
-            return self._answer(request)
-        finally:
-            self._running.release()
 
-    def _answer(self, request: AskRequest) -> AskResponse:
+        def answer(runtime: AgentRuntime) -> AskResponse:
+            ingested = runtime.ingestor.ingest(request.url, check=True)
+            history = [Turn(turn.question, turn.answer) for turn in request.history]
+            question = standalone_question(runtime.grade_model, request.question, history)
+            result = runtime.agent.ask(question, [ingested.url])
+            sources = [
+                Source(
+                    number=citation.number,
+                    url=citation.url,
+                    title=citation.title,
+                    heading=citation.heading,
+                    text=citation.text,
+                )
+                for citation in result.citations
+            ]
+            return AskResponse(answer=result.answer, sources=sources)
+
+        return self._guarded(answer)
+
+    def forget(self, url: str) -> ForgetResponse:
+        """Delete the stored copy of a source.
+
+        Args:
+            url: The address of the source.
+
+        Returns:
+            Whether a stored copy existed.
+
+        Raises:
+            ServerError: If something else is running, the address is not valid, or a service is busy or failed.
+        """
+
+        def delete(runtime: AgentRuntime) -> ForgetResponse:
+            address = normalize_url(url)
+            stored = runtime.store.has_source(address)
+            if stored:
+                runtime.store.delete_source(address)
+            return ForgetResponse(deleted=stored)
+
+        return self._guarded(delete)
+
+    def _guarded[T](self, work: Callable[[AgentRuntime], T]) -> T:
+        """Do ``work`` with the services open, unless something else is running, and turn a failure into an error."""
+        if not self._running.acquire(blocking=False):
+            raise ServerError(429, BUSY_MESSAGE)
         try:
             runtime = self._open(UsageCounter())
             try:
-                ingested = runtime.ingestor.ingest(request.url, check=True)
-                answer = runtime.agent.ask(request.question, [ingested.url])
+                return work(runtime)
             finally:
                 runtime.close()
         except (InvalidURLError, FetchError, ExtractionError) as error:
-            raise AskError(400, str(error)) from error
+            raise ServerError(400, str(error)) from error
         except ServiceBusyError as error:
-            raise AskError(429, str(error), error.retry_after) from error
+            raise ServerError(429, str(error), error.retry_after) from error
         except BudgetExceededError as error:
-            raise AskError(429, str(error)) from error
+            raise ServerError(429, str(error)) from error
         except Exception as error:  # a service that cannot be reached: say what kind of failure, never a key
-            logger.exception("A question failed")
-            raise AskError(503, self._without_keys(f"A service failed: {type(error).__name__}: {error}")) from error
-        sources = [
-            Source(
-                number=citation.number,
-                url=citation.url,
-                title=citation.title,
-                heading=citation.heading,
-                text=citation.text,
-            )
-            for citation in answer.citations
-        ]
-        return AskResponse(answer=answer.answer, sources=sources)
+            logger.exception("A request failed")
+            raise ServerError(503, self._without_keys(f"A service failed: {type(error).__name__}: {error}")) from error
+        finally:
+            self._running.release()
 
     def _without_keys(self, text: str) -> str:
         for secret in filter(None, secret_values(self._settings)):
@@ -199,17 +303,17 @@ def create_app(
     Args:
         settings: The settings, with the keys and the limits.
         tenant: The Weaviate tenant the sources are stored in.
-        open_runtime: Connects to the services for one question. The default builds the agent from the settings; tests
+        open_runtime: Connects to the services for one request. The default builds the agent from the settings; tests
             give a fake.
 
     Returns:
-        The application, which serves ``/api/ask`` and ``/api/health``.
+        The application, which serves ``/api/ingest``, ``/api/ask``, ``/api/page`` and ``/api/health``.
     """
 
     def connect(usage: UsageCounter) -> AgentRuntime:
         return build_runtime(settings, usage, tenant=tenant)
 
-    service = QuestionService(settings, open_runtime or connect)
+    service = Service(settings, open_runtime or connect)
     app = FastAPI(title="Chat With Any Website Agent", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.service = service
 
@@ -222,8 +326,8 @@ def create_app(
         response: Response = await call_next(request)
         return response
 
-    @app.exception_handler(AskError)
-    async def handle_ask_error(request: Request, error: AskError) -> JSONResponse:
+    @app.exception_handler(ServerError)
+    async def handle_server_error(request: Request, error: ServerError) -> JSONResponse:
         headers = {"Retry-After": str(max(1, round(error.retry_after)))} if error.retry_after is not None else None
         return JSONResponse({"detail": str(error)}, status_code=error.status, headers=headers)
 
@@ -232,9 +336,17 @@ def create_app(
         return {"status": "ok"}
 
     # A plain ``def`` endpoint runs in a worker thread, so the blocking calls to the services do not stall the server.
+    @app.post("/api/ingest")
+    def ingest(request: IngestRequest) -> IngestResponse:
+        return service.ingest(request)
+
     @app.post("/api/ask")
     def ask(request: AskRequest) -> AskResponse:
         return service.ask(request)
+
+    @app.delete("/api/page")
+    def forget(url: str = Query(min_length=1, max_length=2048)) -> ForgetResponse:
+        return service.forget(url)
 
     return app
 

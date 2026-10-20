@@ -469,6 +469,24 @@ class WeaviateStore:
             links=links_from_json(_as_text(found.get(LINKS_PROPERTY))),
         )
 
+    def source_title(self, url: str) -> str | None:
+        """Find the title of a stored source.
+
+        Args:
+            url: The address of the source.
+
+        Returns:
+            The title, or ``None`` when the source is not stored or has no title.
+        """
+        first_chunk = Filter.all_of([_url_filter(url), Filter.by_property("chunk_index").equal(FIRST_CHUNK)])
+        response = self._retrier.call(
+            lambda: self._collection.query.fetch_objects(filters=first_chunk, limit=1, return_properties=["title"]),
+            name="Weaviate",
+        )
+        if not response.objects:
+            return None
+        return _as_text(response.objects[0].properties.get("title"))
+
     def search(
         self,
         query: str,

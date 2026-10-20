@@ -648,6 +648,30 @@ def test_marks_that_are_empty_or_not_text_are_not_known() -> None:
     assert store.source_record(SOURCE) == SourceRecord()
 
 
+def test_the_title_of_a_source_is_read_from_its_first_chunk() -> None:
+    store, collection, _ = _store()
+    collection.query.objects = [SimpleNamespace(properties={"title": "Control Flow"})]
+
+    assert store.source_title(SOURCE) == "Control Flow"
+    [call] = collection.query.fetch_calls
+    assert call["filters"].filters == FIRST_CHUNK_OF_SOURCE.filters
+    assert (call["limit"], call["return_properties"]) == (1, ["title"])
+
+
+@pytest.mark.parametrize("stored", [None, "", 5])
+def test_a_source_whose_title_is_missing_has_no_title(stored: object) -> None:
+    store, collection, _ = _store()
+    collection.query.objects = [SimpleNamespace(properties={"title": stored})]
+
+    assert store.source_title(SOURCE) is None
+
+
+def test_the_title_of_a_source_that_is_not_stored_is_none() -> None:
+    store, _, _ = _store()
+
+    assert store.source_title(SOURCE) is None
+
+
 def test_the_record_of_a_source_that_is_not_stored_is_none() -> None:
     store, _, _ = _store(keeps_loaded_at=True, keeps_versions=True)
 
