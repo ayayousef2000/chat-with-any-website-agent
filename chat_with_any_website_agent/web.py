@@ -1,6 +1,7 @@
 """The command ``agent-web``: a small web server on this computer, to try the agent in a browser.
 
-It has the same three calls as the original project's server. ``POST /api/ingest`` loads a page or PDF file (or loads it
+It serves a page copied from the original project (``static/``): paste an address, load it, then chat about it. The page
+uses the same three calls as the original project's server. ``POST /api/ingest`` loads a page or PDF file (or loads it
 again) and says its title. ``POST /api/ask`` asks the agent a question about it, with the last few turns of the
 conversation so that a follow-up can be understood, and answers with the text and the excerpts it cites.
 ``DELETE /api/page`` deletes the stored copy. How the agent got to an answer, the pages it opened and what the question
@@ -16,12 +17,14 @@ import argparse
 import logging
 import sys
 import threading
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 import uvicorn
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
 from chat_with_any_website_agent.config import Settings, describe_validation_error, get_settings
@@ -54,6 +57,15 @@ DEFAULT_PORT = 8000
 
 # The only names this server answers to.
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+# The page and its files, which are part of the package.
+STATIC_DIR = Path(__file__).parent / "static"
+
+# Scripts and styles are served from this origin only, so injected markup could not run or load anything.
+CONTENT_SECURITY_POLICY = (
+    "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; "
+    "base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+)
 
 # More turns than the agent uses are accepted, so that a browser that sends a few extra is not refused.
 MAX_HISTORY_TURNS = 10
@@ -307,7 +319,8 @@ def create_app(
             give a fake.
 
     Returns:
-        The application, which serves ``/api/ingest``, ``/api/ask``, ``/api/page`` and ``/api/health``.
+        The application, which serves the page at ``/`` and its files under ``/static``, and the calls
+        ``/api/ingest``, ``/api/ask``, ``/api/page`` and ``/api/health``.
     """
 
     def connect(usage: UsageCounter) -> AgentRuntime:
@@ -324,12 +337,23 @@ def create_app(
         if _host_name(host) not in LOOPBACK_HOSTS or (origin is not None and urlsplit(origin).netloc != host):
             return JSONResponse({"detail": FORBIDDEN_MESSAGE}, status_code=403)
         response: Response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Content-Security-Policy"] = CONTENT_SECURITY_POLICY
+        # The page and its files carry no version, so a browser would keep an old copy after an update. "no-cache"
+        # makes it ask first; an unchanged file costs a 304.
+        if request.url.path == "/" or request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-cache"
         return response
 
     @app.exception_handler(ServerError)
     async def handle_server_error(request: Request, error: ServerError) -> JSONResponse:
         headers = {"Retry-After": str(max(1, round(error.retry_after)))} if error.retry_after is not None else None
         return JSONResponse({"detail": str(error)}, status_code=error.status, headers=headers)
+
+    @app.get("/", include_in_schema=False)
+    def index() -> FileResponse:
+        return FileResponse(STATIC_DIR / "index.html")
 
     @app.get("/api/health")
     def health() -> dict[str, str]:
@@ -348,6 +372,7 @@ def create_app(
     def forget(url: str = Query(min_length=1, max_length=2048)) -> ForgetResponse:
         return service.forget(url)
 
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     return app
 
 
