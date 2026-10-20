@@ -1,0 +1,465 @@
+/* Aurora Borealis: glass panels over a soft aurora glow.
+   Type: a serif for what you read (title, questions, answers, sources), a sans for controls and a monospace for
+   evidence (citations, source labels, page bar, code). Emerald marks evidence; rose appears only as a highlight.
+   The colors are the ones of the original project, whose text and background pairs were checked for contrast. */
+
+:root {
+  color-scheme: light dark;
+
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", Consolas, "SF Mono", monospace;
+
+  /* Every color is written once, as light-dark(light value, dark value). Which side is used depends on color-scheme:
+     the setting of the device by default, or the choice made with the switch in the header (see theme.js). */
+  --bg: light-dark(#eef8f4, #050d12);
+  --surface: light-dark(rgba(255, 255, 255, 0.75), rgba(255, 255, 255, 0.05));
+  --text: light-dark(#0b2a22, #e8f6f0);
+  --muted: light-dark(#456459, #a6c5ba);
+  --border: light-dark(rgba(6, 107, 74, 0.2), rgba(255, 255, 255, 0.12));
+  --accent: light-dark(#066b4a, #34f5a5);
+  --accent-text: light-dark(#ffffff, #04130d);
+  --user-bubble: light-dark(rgba(6, 107, 74, 0.1), rgba(52, 245, 165, 0.14));
+  --code-bg: light-dark(rgba(6, 107, 74, 0.07), rgba(0, 0, 0, 0.4));
+  --error: light-dark(#b3321f, #ffa3a3);
+  --cite: light-dark(#066b4a, #34f5a5);
+  --cite-bg: light-dark(rgba(6, 107, 74, 0.1), rgba(52, 245, 165, 0.16));
+  --flash: light-dark(rgba(255, 95, 162, 0.2), rgba(255, 95, 162, 0.22));
+  --glow1: light-dark(rgba(52, 245, 165, 0.1), rgba(52, 245, 165, 0.22));
+  --glow2: light-dark(rgba(255, 95, 162, 0.08), rgba(255, 95, 162, 0.16));
+  --btn-text: light-dark(#ffffff, #04130d);
+  --g1: light-dark(#066b4a, #34f5a5);
+  --g2: light-dark(#0a6d77, #22d3ee);
+  --shadow: light-dark(rgba(6, 107, 74, 0.25), rgba(52, 245, 165, 0.35));
+  --danger: light-dark(#b3321f, #ffa3a3);
+  --danger-text: light-dark(#ffffff, #2a0a0a);
+}
+
+/* The switch in the header sets data-theme on the page. Without it, the device decides. */
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+
+* { box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  font: 16px/1.5 var(--sans);
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* The aurora sits on its own fixed layer, which scrolls more smoothly than a fixed background. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(900px 520px at 12% -8%, var(--glow1), transparent 60%),
+    radial-gradient(760px 520px at 100% 0%, var(--glow2), transparent 55%);
+  pointer-events: none;
+}
+
+/* The page fills the viewport and only the conversation scrolls, so the question box never moves away. */
+main {
+  max-width: 820px;
+  height: 100vh;
+  height: 100dvh;
+  margin: 0 auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+h1 {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0;
+  font: 700 1.9rem/1.15 var(--serif);
+  letter-spacing: -0.02em;
+  background: linear-gradient(90deg, var(--text) 10%, var(--cite) 55%, var(--g2));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+h1 img {
+  width: 40px;
+  height: 40px;
+  flex: none;
+  border-radius: 12px;
+  box-shadow: 0 6px 24px var(--shadow);
+  -webkit-text-fill-color: initial;
+}
+
+.subtitle { margin: 4px 0 0; color: var(--muted); font-family: var(--serif); font-style: italic; }
+
+/* The title and the theme switch share the top row; the switch is three icon buttons in a pill. */
+.header-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.header-top h1 { min-width: 0; }
+
+.theme-switch {
+  display: inline-flex;
+  flex: none;
+  gap: 2px;
+  padding: 3px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+}
+
+.theme-switch[hidden] { display: none; }
+
+.theme-switch button.secondary {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-color: transparent;
+  border-radius: 999px;
+  transition: color 0.15s, background-color 0.15s, border-color 0.15s;
+}
+
+.theme-switch button.secondary:hover:not(:disabled):not([aria-pressed="true"]) { background: var(--cite-bg); }
+.theme-switch button.secondary[aria-pressed="true"] { color: var(--cite); background: var(--cite-bg); border-color: var(--cite); }
+
+.theme-switch svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.muted { color: var(--muted); }
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+form { display: flex; gap: 8px; }
+
+input {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 14px;
+  font: inherit;
+  color: inherit;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+}
+
+input::placeholder { color: var(--muted); opacity: 1; }
+input:focus-visible { outline: 0; border-color: var(--cite); box-shadow: 0 0 0 3px var(--cite-bg); }
+
+/* Keep browser autofill from painting a light background in dark mode. */
+input:-webkit-autofill {
+  -webkit-text-fill-color: var(--text);
+  box-shadow: 0 0 0 100px var(--bg) inset;
+  caret-color: var(--text);
+}
+
+button {
+  padding: 10px 18px;
+  font: inherit;
+  font-weight: 600;
+  color: var(--btn-text);
+  background: linear-gradient(135deg, var(--g1), var(--g2));
+  border: 0;
+  border-radius: 12px;
+  box-shadow: 0 4px 18px var(--shadow);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+
+button:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 8px 24px var(--shadow); }
+button:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+button:disabled { opacity: 0.55; cursor: not-allowed; box-shadow: none; }
+
+button.secondary {
+  padding: 4px 12px;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  box-shadow: none;
+}
+
+button.secondary:hover:not(:disabled) { border-color: var(--cite); box-shadow: none; transform: none; }
+
+.load { display: flex; flex-direction: column; gap: 6px; }
+
+.status { display: flex; flex-direction: column; gap: 2px; margin: 0; color: var(--muted); font-size: 0.9rem; }
+.status:empty { display: none; }
+.status.error .status-main { color: var(--error); font-weight: 600; }
+.status-note { color: var(--muted); font-size: 0.85rem; }
+
+.page-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  padding: 8px 12px;
+  font: 0.8rem var(--mono);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--cite);
+  border-radius: 6px 14px 14px 6px;
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+}
+
+.page-bar[hidden] { display: none; }
+.page-actions { display: flex; flex: none; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+#page-meta { display: block; margin-top: 2px; font-size: 0.78rem; }
+#page-meta:empty { display: none; }
+.page-bar-text { flex: 1 1 16rem; min-width: 0; overflow-wrap: anywhere; }
+.page-label { display: block; color: var(--muted); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; }
+.page-bar a { color: var(--cite); font: 700 0.95rem var(--serif); text-underline-offset: 3px; }
+
+#messages {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+}
+
+.empty { margin: auto; color: var(--muted); text-align: center; font-family: var(--serif); font-size: 1.05rem; }
+.empty p { margin: 4px 0; }
+
+.message {
+  max-width: 90%;
+  padding: 10px 14px;
+  border-radius: 16px;
+  overflow-wrap: anywhere;
+  animation: float 0.4s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+/* An assistant message sits in a row beside the assistant's icon. */
+.row {
+  display: flex;
+  align-items: flex-start;
+  align-self: flex-start;
+  gap: 10px;
+  max-width: 94%;
+  animation: float 0.4s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.row > .message { max-width: none; min-width: 0; animation: none; }
+
+.avatar {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  margin-top: 2px;
+  border-radius: 10px;
+  box-shadow: 0 2px 12px var(--shadow);
+}
+
+.message.user {
+  align-self: flex-end;
+  border-radius: 16px 16px 4px 16px;
+  background: var(--user-bubble);
+  font-family: var(--serif);
+  font-style: italic;
+  white-space: pre-wrap;
+}
+
+.message.assistant { align-self: flex-start; border: 1px solid var(--border); background: rgba(255, 255, 255, 0.03); }
+/* Italic is not used in Arabic or Hebrew, so right-to-left questions stay upright. */
+.message.user:dir(rtl) { font-style: normal; }
+.message.error { color: var(--error); border-color: var(--error); font-family: var(--sans); font-style: normal; }
+
+/* Rendered Markdown in answers */
+.md { font-family: var(--serif); font-size: 1.08rem; line-height: 1.65; }
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p { margin: 0 0 0.6em; }
+.md .md-heading { margin: 0.8em 0 0.3em; font-weight: 700; }
+.md ul, .md ol { margin: 0 0 0.6em; padding-inline-start: 1.4em; }
+.md code { padding: 0.1em 0.35em; font: 0.85em var(--mono); background: var(--code-bg); border-radius: 5px; }
+.md pre {
+  margin: 0 0 0.6em;
+  padding: 10px 12px;
+  overflow-x: auto;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.md pre code { padding: 0; font-size: 0.82em; background: none; white-space: pre; }
+.md a { color: var(--cite); }
+
+/* Sources */
+details { margin-top: 8px; font: 0.78rem var(--mono); color: var(--muted); }
+summary { cursor: pointer; }
+summary:focus-visible { outline: 2px solid var(--cite); outline-offset: 2px; }
+
+.source {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-inline-start: 2px solid;
+  border-image: linear-gradient(180deg, var(--g1), var(--g2)) 1;
+}
+
+.source[hidden] { display: none; }
+.source.highlight { background: var(--flash); }
+.source-label { display: block; margin-bottom: 4px; color: var(--cite); font-weight: 700; }
+
+.source-passage,
+.source-text {
+  color: var(--text);
+  font: 0.95rem/1.55 var(--serif);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.source-passage[hidden], .source-text[hidden] { display: none; }
+
+/* The words and the passage that match the question */
+mark {
+  padding: 0 0.12em;
+  color: inherit;
+  background: var(--flash);
+  border-radius: 4px;
+}
+
+mark.passage { padding: 0.1em 0; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+
+button.toggle { display: block; margin-top: 6px; font: 0.78rem var(--mono); }
+
+button.cite {
+  min-width: 1.75rem;
+  min-height: 1.5rem;
+  padding: 0 6px;
+  margin: 0 2px 0 4px;
+  font: 600 0.72rem/1.4 var(--mono);
+  color: var(--cite);
+  background: var(--cite-bg);
+  border: 0;
+  border-radius: 8px;
+  box-shadow: none;
+  vertical-align: 0.12em;
+}
+
+button.cite:hover:not(:disabled), button.cite:focus-visible {
+  color: var(--btn-text);
+  background: linear-gradient(135deg, var(--g1), var(--g2));
+  box-shadow: none;
+  transform: none;
+}
+
+/* Confirmation dialog. The form fills the dialog, so a click on the dimmed backdrop is a click on the dialog. */
+dialog {
+  width: min(92vw, 26rem);
+  padding: 0;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+}
+
+dialog::backdrop {
+  background: rgba(3, 10, 14, 0.6);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+}
+
+dialog[open] { animation: dialog-in 0.18s ease-out; }
+
+dialog form { display: block; padding: 22px; }
+dialog h2 { margin: 0 0 8px; font: 700 1.25rem/1.25 var(--serif); }
+dialog p { margin: 0 0 20px; color: var(--muted); font: 1.02rem/1.5 var(--serif); overflow-wrap: anywhere; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.dialog-actions button { padding: 8px 18px; }
+
+button.danger { color: var(--danger-text); background: var(--danger); box-shadow: 0 4px 18px rgba(0, 0, 0, 0.25); }
+
+@keyframes dialog-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+
+/* Typing indicator while an answer is on its way */
+.typing { display: inline-flex; gap: 4px; align-items: center; height: 1.5em; }
+
+.typing span {
+  width: 6px;
+  height: 6px;
+  background: linear-gradient(135deg, var(--g1), var(--g2));
+  border-radius: 50%;
+  animation: blink 1.2s infinite ease-in-out;
+}
+
+.typing span:nth-child(2) { animation-delay: 0.2s; }
+.typing span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes blink {
+  0%, 80%, 100% { opacity: 0.25; }
+  40% { opacity: 1; }
+}
+
+@keyframes float {
+  from { opacity: 0; transform: translateY(12px) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .message, .row, dialog[open] { animation: none; }
+  .typing span { animation: none; opacity: 0.6; }
+  button { transition: none; }
+  button:hover:not(:disabled) { transform: none; }
+}
+
+/* Keep the Load button beside the address box and only stack on very narrow screens. */
+@media (max-width: 480px) {
+  h1 { font-size: 1.55rem; }
+  h1 img { width: 34px; height: 34px; }
+}
+
+@media (max-width: 380px) {
+  #ingest-form { flex-direction: column; }
+}
+
+/* With the on-screen keyboard open, or a phone on its side, there is little height. The conversation comes first:
+   once a page is loaded, the title, the address box and the page buttons step aside, and they return by themselves
+   when there is room again. Nothing is removed, so a page that is not loaded yet keeps its address box. */
+@media (max-width: 600px) and (max-height: 560px) {
+  main:has(#page-bar:not([hidden])) { gap: 8px; padding-block: 8px; }
+  main:has(#page-bar:not([hidden])) :is(header, #ingest-form, .page-actions, .page-label, #page-meta) { display: none; }
+  main:has(#page-bar:not([hidden])) .page-bar a {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}

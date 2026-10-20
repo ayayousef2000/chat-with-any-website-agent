@@ -1,5 +1,6 @@
 """Tests of the web server, with fakes instead of the agent and the services."""
 
+import re
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
@@ -584,6 +585,116 @@ def test_the_generated_documentation_pages_are_not_served(monkeypatch: pytest.Mo
     client, _, _ = _client(monkeypatch)
 
     assert [client.get(path).status_code for path in ("/docs", "/redoc", "/openapi.json")] == [404, 404, 404]
+
+
+# --- the page ---
+
+
+def _page_files(client: TestClient) -> list[str]:
+    """The files that the page loads, as the paths in its own text."""
+    html = client.get("/").text
+    return re.findall(r'(?:src|href)="(/static/[^"?]+)', html)
+
+
+def test_the_page_is_served_at_the_address_of_the_server(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _, _ = _client(monkeypatch)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "<title>Chat With Any Website Agent</title>" in response.text
+    for element in ("ingest-form", "ask-form", "messages", "refresh-page", "forget-page", "new-chat"):
+        assert f'id="{element}"' in response.text
+
+
+def test_every_file_the_page_loads_is_served(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _, _ = _client(monkeypatch)
+
+    files = _page_files(client)
+
+    assert sorted(files) == [
+        "/static/app.js",
+        "/static/favicon.svg",
+        "/static/favicon.svg",
+        "/static/styles.css",
+        "/static/theme.js",
+    ]
+    types = {path: client.get(path).headers["content-type"] for path in set(files)}
+    assert types["/static/app.js"].startswith(("text/javascript", "application/javascript"))
+    assert types["/static/theme.js"].startswith(("text/javascript", "application/javascript"))
+    assert types["/static/styles.css"].startswith("text/css")
+    assert types["/static/favicon.svg"].startswith("image/svg+xml")
+
+
+def test_the_page_has_no_inline_script_or_style_that_the_content_policy_would_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _, _ = _client(monkeypatch)
+    html = client.get("/").text
+
+    assert not re.search(r"<script(?![^>]*\bsrc=)", html)
+    assert "<style" not in html
+    assert not re.search(r"\sstyle=", html)
+    assert not re.search(r"\son[a-z]+=", html)  # no inline event handlers
+
+
+def test_every_response_carries_the_security_headers_and_the_page_is_never_cached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _, _ = _client(monkeypatch)
+
+    page, script, health = client.get("/"), client.get("/static/app.js"), client.get("/api/health")
+
+    for response in (page, script, health):
+        assert response.headers["x-content-type-options"] == "nosniff"
+        assert response.headers["referrer-policy"] == "no-referrer"
+        assert "script-src 'self'" in response.headers["content-security-policy"]
+        assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
+    assert page.headers["cache-control"] == script.headers["cache-control"] == "no-cache"
+    assert "cache-control" not in health.headers
+
+
+def test_the_page_is_only_served_to_this_computer(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _, _ = _client(monkeypatch)
+
+    assert client.get("/", headers={"host": "evil.example"}).status_code == 403
+    assert client.get("/static/app.js", headers={"host": "evil.example"}).status_code == 403
+
+
+def test_the_script_only_calls_what_the_server_offers(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _, _ = _client(monkeypatch)
+    script = (web.STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    routes = {route.path for route in client.app.routes}  # type: ignore[attr-defined]
+
+    called = set(re.findall(r'["`](/api/[a-z]+)', script))
+
+    assert called == {"/api/ingest", "/api/ask", "/api/page"}
+    assert called <= routes
+
+
+def test_the_script_reads_the_fields_that_the_server_answers_with(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _, _ = _client(monkeypatch)
+    script = (web.STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    loaded = client.post("/api/ingest", json={"url": URL}).json()
+    answered = client.post("/api/ask", json=BODY).json()
+
+    for field in ("url", "title"):
+        assert f"result.{field}" in script
+        assert field in loaded
+    assert "result.answer" in script
+    assert "result.sources" in script
+    assert set(answered) == {"answer", "sources"}
+    for field in ("number", "heading", "text", "url", "title"):
+        assert field in answered["sources"][0]
+
+
+def test_the_page_files_have_no_carriage_returns_or_leftovers_of_the_original_project() -> None:
+    for path in web.STATIC_DIR.iterdir():
+        text = path.read_bytes().decode("utf-8")
+        assert "\r" not in text
+        assert "tests/js" not in text
+        assert "module.exports" not in text
 
 
 # --- the default services and the command ---

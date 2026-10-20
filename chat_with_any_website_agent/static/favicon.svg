@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Chat With Any Website Agent">
+  <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#12b886"/><stop offset="1" stop-color="#0e7490"/></linearGradient><clipPath id="icon"><rect width="64" height="64" rx="14"/></clipPath></defs>
+  <g clip-path="url(#icon)">
+  <rect width="64" height="64" fill="url(#g)"/>
+  <line x1="27" y1="9" x2="27" y2="15" stroke="#ffffff" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="27" cy="8" r="3.2" fill="#ff8fc2"/>
+  <rect x="6" y="23" width="5" height="10" rx="2.5" fill="#ffffff"/>
+  <rect x="11" y="15" width="32" height="26" rx="8" fill="#ffffff"/>
+  <circle cx="20.5" cy="26.5" r="3.6" fill="#0f8a82"/>
+  <circle cx="33.5" cy="26.5" r="3.6" fill="#0f8a82"/>
+  <line x1="21" y1="35" x2="33" y2="35" stroke="#0f8a82" stroke-width="2.6" stroke-linecap="round"/>
+  <rect x="15" y="43" width="24" height="10" rx="5" fill="#ffffff"/>
+  <line x1="49" y1="49" x2="57" y2="57" stroke="#0f8a82" stroke-width="10" stroke-linecap="round"/>
+  <circle cx="43" cy="43" r="11" fill="#0f8a82"/>
+  <line x1="49" y1="49" x2="57" y2="57" stroke="#ff8fc2" stroke-width="5" stroke-linecap="round"/>
+  <circle cx="43" cy="43" r="7.5" fill="#0f8a82" stroke="#ff8fc2" stroke-width="4"/>
+  <path d="M39 41a5 5 0 0 1 4-3.2" fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" opacity="0.85"/>
+  </g>
+</svg>
