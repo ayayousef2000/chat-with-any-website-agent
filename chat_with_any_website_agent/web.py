@@ -7,14 +7,20 @@ conversation so that a follow-up can be understood, and answers with the text an
 ``DELETE /api/page`` deletes the stored copy. How the agent got to an answer, the pages it opened and what the question
 cost stay in the terminal (``agent-ask``) and are not sent to the browser.
 
-Like ``agent-ask``, the server uses Cohere, Weaviate and Groq, so a question is asked by hand. It is for one person on
-one computer: it listens on the loopback address only, does one thing at a time (the free plans have small limits) and
-refuses a request whose ``Host`` or ``Origin`` is not this server, so that a page of another website that is open in
-the same browser cannot ask questions with the keys of the person.
+Like ``agent-ask``, the server uses Cohere, Weaviate and Groq, so a question is asked by hand. Started with
+``agent-web`` it is for one person on one computer: it listens on the loopback address only, does one thing at a time
+(the free plans have small limits) and refuses a request whose ``Host`` or ``Origin`` is not this server, so that a page
+of another website that is open in the same browser cannot ask questions with the keys of the person.
+
+A hosting service starts it with uvicorn and ``create_app_from_environment`` instead (see the ``Dockerfile``), and lists
+its own name in ``WEB_ALLOWED_HOSTS``. Then every visitor is limited (``RATE_LIMIT_*``), and the stored sources are
+deleted when more than ``WEB_MAX_STORED_CHUNKS`` chunks are stored, so that visitors cannot fill the free plan of
+Weaviate. ``/api/health`` answers at once, to anyone, and calls no outside service, for the health check of the host.
 """
 
 import argparse
 import logging
+import os
 import sys
 import threading
 from pathlib import Path
@@ -34,9 +40,11 @@ from chat_with_any_website_agent.errors import (
     FetchError,
     InvalidURLError,
     ServiceBusyError,
+    TooManyRequestsError,
 )
 from chat_with_any_website_agent.fetching import normalize_url
 from chat_with_any_website_agent.follow_up import Turn, standalone_question
+from chat_with_any_website_agent.ratelimit import ClientLimits
 from chat_with_any_website_agent.smoke import secret_values
 from chat_with_any_website_agent.usage import UsageCounter
 from chat_with_any_website_agent.wiring import build_runtime
@@ -70,7 +78,9 @@ CONTENT_SECURITY_POLICY = (
 # More turns than the agent uses are accepted, so that a browser that sends a few extra is not refused.
 MAX_HISTORY_TURNS = 10
 
-BUSY_MESSAGE = "Something is already being done. Wait until it is finished."
+BUSY_MESSAGE = "The server is busy with another request. Please try again in a few seconds."
+BUSY_RETRY_SECONDS = 5
+HEALTH_PATH = "/api/health"
 FORBIDDEN_MESSAGE = "This server answers only to pages that it serves itself."
 
 
@@ -215,6 +225,7 @@ class Service:
         """
 
         def load(runtime: AgentRuntime) -> IngestResponse:
+            self._make_room(runtime)
             result = runtime.ingestor.ingest(request.url, refresh=request.refresh)
             title = result.title or runtime.store.source_title(result.url) or urlsplit(result.url).hostname
             return IngestResponse(url=result.url, title=title or result.url)
@@ -236,6 +247,7 @@ class Service:
         """
 
         def answer(runtime: AgentRuntime) -> AskResponse:
+            self._make_room(runtime)
             ingested = runtime.ingestor.ingest(request.url, check=True)
             history = [Turn(turn.question, turn.answer) for turn in request.history]
             question = standalone_question(runtime.grade_model, request.question, history)
@@ -279,7 +291,7 @@ class Service:
     def _guarded[T](self, work: Callable[[AgentRuntime], T]) -> T:
         """Do ``work`` with the services open, unless something else is running, and turn a failure into an error."""
         if not self._running.acquire(blocking=False):
-            raise ServerError(429, BUSY_MESSAGE)
+            raise ServerError(429, BUSY_MESSAGE, BUSY_RETRY_SECONDS)
         try:
             runtime = self._open(UsageCounter())
             try:
@@ -298,6 +310,17 @@ class Service:
         finally:
             self._running.release()
 
+    def _make_room(self, runtime: AgentRuntime) -> None:
+        """Delete the stored sources when more chunks are stored than the limit allows, so that the next page fits.
+
+        The sources that visitors are still using are loaded again at their next question, so nothing breaks for
+        them. With no limit (0) nothing is counted or deleted.
+        """
+        limit = self._settings.web_max_stored_chunks
+        if limit and runtime.store.count_chunks() > limit:
+            logger.warning("More than %d chunks are stored; deleting the stored sources", limit)
+            runtime.store.clear()
+
     def _without_keys(self, text: str) -> str:
         for secret in filter(None, secret_values(self._settings)):
             text = text.replace(secret, "***")
@@ -308,6 +331,7 @@ def create_app(
     settings: Settings,
     tenant: str = DEMO_TENANT,
     *,
+    extra_hosts: Sequence[str] = (),
     open_runtime: Callable[[UsageCounter], AgentRuntime] | None = None,
 ) -> FastAPI:
     """Create the web application.
@@ -315,6 +339,7 @@ def create_app(
     Args:
         settings: The settings, with the keys and the limits.
         tenant: The Weaviate tenant the sources are stored in.
+        extra_hosts: Further names to answer to, besides this computer and ``WEB_ALLOWED_HOSTS``.
         open_runtime: Connects to the services for one request. The default builds the agent from the settings; tests
             give a fake.
 
@@ -327,6 +352,8 @@ def create_app(
         return build_runtime(settings, usage, tenant=tenant)
 
     service = Service(settings, open_runtime or connect)
+    limits = ClientLimits.from_settings(settings)
+    names = LOOPBACK_HOSTS | settings.web_host_names | frozenset(extra_hosts)
     app = FastAPI(title="Chat With Any Website Agent", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.service = service
 
@@ -334,7 +361,10 @@ def create_app(
     async def only_from_this_page(request: Request, call_next: Callable[[Request], Any]) -> Response:
         host = request.headers.get("host", "")
         origin = request.headers.get("origin")
-        if _host_name(host) not in LOOPBACK_HOSTS or (origin is not None and urlsplit(origin).netloc != host):
+        # The health check of a host comes to the address of the instance, not to its public name, and learns nothing.
+        if request.url.path != HEALTH_PATH and (
+            _host_name(host).lower() not in names or (origin is not None and urlsplit(origin).netloc != host)
+        ):
             return JSONResponse({"detail": FORBIDDEN_MESSAGE}, status_code=403)
         response: Response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -351,29 +381,53 @@ def create_app(
         headers = {"Retry-After": str(max(1, round(error.retry_after)))} if error.retry_after is not None else None
         return JSONResponse({"detail": str(error)}, status_code=error.status, headers=headers)
 
+    @app.exception_handler(TooManyRequestsError)
+    async def handle_too_many_requests(request: Request, error: TooManyRequestsError) -> JSONResponse:
+        headers = {"Retry-After": str(max(1, round(error.retry_after)))}
+        return JSONResponse({"detail": str(error)}, status_code=429, headers=headers)
+
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:
         return FileResponse(STATIC_DIR / "index.html")
 
-    @app.get("/api/health")
+    @app.get(HEALTH_PATH)
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
     # A plain ``def`` endpoint runs in a worker thread, so the blocking calls to the services do not stall the server.
+    # The limits of the visitor are counted first, so that a refused request reaches no service.
     @app.post("/api/ingest")
-    def ingest(request: IngestRequest) -> IngestResponse:
-        return service.ingest(request)
+    def ingest(body: IngestRequest, request: Request) -> IngestResponse:
+        limits.enforce(request, "load")
+        return service.ingest(body)
 
     @app.post("/api/ask")
-    def ask(request: AskRequest) -> AskResponse:
-        return service.ask(request)
+    def ask(body: AskRequest, request: Request) -> AskResponse:
+        limits.enforce(request, "ask")
+        return service.ask(body)
 
     @app.delete("/api/page")
-    def forget(url: str = Query(min_length=1, max_length=2048)) -> ForgetResponse:
+    def forget(request: Request, url: str = Query(min_length=1, max_length=2048)) -> ForgetResponse:
+        limits.enforce(request, "load")
         return service.forget(url)
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     return app
+
+
+def create_app_from_environment() -> FastAPI:
+    """Create the application for a hosting service, from the settings in the environment.
+
+    The tenant is ``WEAVIATE_TENANT``. The server answers to the names in ``WEB_ALLOWED_HOSTS`` and, on Render, to the
+    name of the service itself, which Render gives in ``RENDER_EXTERNAL_HOSTNAME``; a custom domain has to be listed
+    in ``WEB_ALLOWED_HOSTS``. Start it with ``uvicorn --factory``, which calls this function once.
+
+    Returns:
+        The application.
+    """
+    settings = get_settings()
+    own_name = os.environ.get("RENDER_EXTERNAL_HOSTNAME", "").strip().lower()
+    return create_app(settings, settings.weaviate_tenant, extra_hosts=[own_name] if own_name else [])
 
 
 def _parser() -> argparse.ArgumentParser:

@@ -37,6 +37,18 @@ class ServiceBusyError(AgentError):
         self.retry_after = retry_after
 
 
+class TooManyRequestsError(AgentError):
+    """A visitor used the server more often than the limits allow.
+
+    Attributes:
+        retry_after: How many seconds to wait before trying again.
+    """
+
+    def __init__(self, message: str, retry_after: float) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
 class BudgetExceededError(AgentError):
     """A run reached the limit it was given for the calls or tokens of a service.
 
