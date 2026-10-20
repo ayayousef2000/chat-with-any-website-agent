@@ -106,6 +106,30 @@ A run stops cleanly at the limits of calls and tokens in the settings, and `--re
 
 `--system` also accepts `agent-single` (the agent without links), `plain` (one search and one answer) and `crawl` (the plain pipeline over a crawled site), to compare the agent with simpler systems. `--category NAME` answers only one category of the set, and `--fresh` empties the `eval` tenant first, so that loading pages is part of the cost.
 
+## Docker
+
+```bash
+docker build --tag chat-with-any-website-agent .
+docker run --rm --publish 8000:8000 --env-file .env chat-with-any-website-agent
+```
+
+Then open <http://localhost:8000>.
+
+## Deploy on Render
+
+[`render.yaml`](render.yaml) creates two free web services: `production` (the `main` branch, Weaviate tenant `production`) and `staging` (the `develop` branch, tenant `staging`).
+
+1. In Render choose **New**, then **Blueprint**, and select this repository and the `main` branch.
+2. For each service, enter the secrets Render asks for: `COHERE_API_KEY`, `WEAVIATE_URL`, `WEAVIATE_API_KEY` and `GROQ_API_KEY`. Use one Groq key and leave the optional settings empty.
+3. Wait for the build. The page is at the address of each service.
+
+Good to know:
+
+- A free service sleeps after 15 minutes without traffic and takes about a minute to wake.
+- A free Weaviate plan allows three tenants, so give the two services a cluster of their own, not the one you use on your computer.
+- If the page answers "This server answers only to pages that it serves itself", set `WEB_ALLOWED_HOSTS` to the address of the service.
+- Each visitor is limited in questions and page loads (the `RATE_LIMIT_*` settings below).
+
 ## Configuration
 
 Settings are read from the environment or from `.env`; `.env.example` lists all of them with their defaults. The ones that shape the agent:
@@ -123,6 +147,12 @@ Settings are read from the environment or from `.env`; `.env.example` lists all 
 | `AGENT_MAX_LINK_HOPS` | 3 | The most times the agent chooses links of the site to open; 0 keeps it on the pages it was given |
 | `AGENT_MAX_PAGES` | 5 | The most pages the agent loads by following links; 0 keeps it on the pages it was given |
 | `WEAVIATE_TENANT` | `development` | Keeps the data of different uses apart |
+| `WEB_ALLOWED_HOSTS` | empty | Names the web server answers to besides this computer, separated by commas (a custom domain) |
+| `WEB_MAX_STORED_CHUNKS` | 0 | When more chunks than this are stored, the stored pages are deleted before the next page is loaded; 0 keeps them all |
+| `RATE_LIMIT_ENABLED` | `True` | Limit how often one visitor may ask questions and load pages |
+| `RATE_LIMIT_ASKS_PER_MINUTE` | 6 | Questions one visitor may ask in a minute |
+| `RATE_LIMIT_ASKS_PER_DAY` | 60 | Questions one visitor may ask in a day (a sliding 24 hours) |
+| `RATE_LIMIT_LOADS_PER_HOUR` | 20 | Page loads and deletes one visitor may make in an hour |
 
 The agent warns at startup when a limit is too small for the link hops and retries it allows.
 

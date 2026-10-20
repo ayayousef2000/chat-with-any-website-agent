@@ -1,0 +1,109 @@
+# Render Blueprint: describes the two web services of this repository so that they can be created from it.
+# Secrets are not stored here: Render asks for them only when a Blueprint is first created, so the secrets of a
+# service added later must be entered in its Environment tab (sync: false).
+#
+#   production  deploys the main branch, which only changes when a release is merged
+#   staging     deploys the develop branch on every merge, to try changes before a release
+#
+# The Blueprint is linked to the main branch, so a change to this file takes effect after a release.
+#
+# Each service has its own tenant of the Weaviate collection WebsiteChunk. A free Weaviate Cloud plan allows one
+# collection and three tenants, and Weaviate keeps the tenants apart. Give both services the cluster of the account that
+# hosts them (the same WEAVIATE_URL and WEAVIATE_API_KEY), and keep the tenants development, eval and demo of a
+# computer on a cluster of their own, so that working locally can never touch the pages of a live site. The two services
+# can also use two different clusters: the settings of every service are separate.
+services:
+  - type: web
+    name: chat-with-any-website-agent
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    # Frankfurt is close to a Weaviate Cloud cluster in eu-central-1.
+    region: frankfurt
+    plan: free
+    # Deploy the released branch only, so that every push to develop does not reach visitors.
+    branch: main
+    autoDeployTrigger: commit
+    # Answers at once and calls no outside service (see chat_with_any_website_agent/web.py).
+    healthCheckPath: /api/health
+    envVars:
+      - key: WEAVIATE_COLLECTION
+        value: WebsiteChunk
+      - key: WEAVIATE_TENANT
+        value: production
+      # The visitors share one free Weaviate plan (100,000 objects in all). When more chunks than this are stored, the
+      # stored pages are deleted before the next page is loaded, and the pages in use are loaded again on demand.
+      - key: WEB_MAX_STORED_CHUNKS
+        value: "20000"
+      # The limits for each visitor: questions a minute, questions a day and page loads (and deletes) an hour.
+      - key: RATE_LIMIT_ENABLED
+        value: "true"
+      - key: RATE_LIMIT_ASKS_PER_MINUTE
+        value: "6"
+      - key: RATE_LIMIT_ASKS_PER_DAY
+        value: "60"
+      - key: RATE_LIMIT_LOADS_PER_HOUR
+        value: "20"
+      # The addresses the server trusts to say who the visitor is, so that the limits per visitor are counted per
+      # visitor. The server is reached through a local proxy (127.0.0.1), Render's internal range and Cloudflare's
+      # published addresses (https://www.cloudflare.com/ips/). Uvicorn reads the forwarded header from the right, skips
+      # these trusted addresses and takes the first other one: the visitor. Anything a caller puts in the header sits
+      # to the left of the visitor, so it cannot change the result.
+      - key: FORWARDED_ALLOW_IPS
+        value: "127.0.0.1,::1,10.0.0.0/8,173.245.48.0/20,103.21.244.0/22,103.22.200.0/22,103.31.4.0/22,141.101.64.0/18,108.162.192.0/18,190.93.240.0/20,188.114.96.0/20,197.234.240.0/22,198.41.128.0/17,162.158.0.0/15,104.16.0.0/13,104.24.0.0/14,172.64.0.0/13,131.0.72.0/22,2400:cb00::/32,2606:4700::/32,2803:f800::/32,2405:b500::/32,2405:8100::/32,2a06:98c0::/29,2c0f:f248::/32"
+      # The server answers to the name of the service by itself (Render gives it as RENDER_EXTERNAL_HOSTNAME). Enter
+      # more names here, separated by commas, only for a custom domain.
+      - key: WEB_ALLOWED_HOSTS
+        sync: false
+      - key: COHERE_API_KEY
+        sync: false
+      - key: WEAVIATE_URL
+        sync: false
+      - key: WEAVIATE_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      # Optional: more Groq keys, separated by commas. Leave empty to use only GROQ_API_KEY. Groq's acceptable use
+      # policy prohibits spreading usage across accounts to get around limits, so a public site should use one key.
+      - key: GROQ_BACKUP_API_KEYS
+        sync: false
+
+  - type: web
+    name: chat-with-any-website-agent-staging
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    region: frankfurt
+    plan: free
+    # Every merge into develop is deployed here, so a change can be tried before it is released.
+    branch: develop
+    autoDeployTrigger: commit
+    healthCheckPath: /api/health
+    envVars:
+      - key: WEAVIATE_COLLECTION
+        value: WebsiteChunk
+      - key: WEAVIATE_TENANT
+        value: staging
+      - key: WEB_MAX_STORED_CHUNKS
+        value: "20000"
+      - key: RATE_LIMIT_ENABLED
+        value: "true"
+      - key: RATE_LIMIT_ASKS_PER_MINUTE
+        value: "6"
+      - key: RATE_LIMIT_ASKS_PER_DAY
+        value: "60"
+      - key: RATE_LIMIT_LOADS_PER_HOUR
+        value: "20"
+      # The same trusted addresses as the production service (see above).
+      - key: FORWARDED_ALLOW_IPS
+        value: "127.0.0.1,::1,10.0.0.0/8,173.245.48.0/20,103.21.244.0/22,103.22.200.0/22,103.31.4.0/22,141.101.64.0/18,108.162.192.0/18,190.93.240.0/20,188.114.96.0/20,197.234.240.0/22,198.41.128.0/17,162.158.0.0/15,104.16.0.0/13,104.24.0.0/14,172.64.0.0/13,131.0.72.0/22,2400:cb00::/32,2606:4700::/32,2803:f800::/32,2405:b500::/32,2405:8100::/32,2a06:98c0::/29,2c0f:f248::/32"
+      - key: WEB_ALLOWED_HOSTS
+        sync: false
+      - key: COHERE_API_KEY
+        sync: false
+      - key: WEAVIATE_URL
+        sync: false
+      - key: WEAVIATE_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_BACKUP_API_KEYS
+        sync: false

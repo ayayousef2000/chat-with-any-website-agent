@@ -88,6 +88,38 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  docker:
+    name: Docker image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the image
+        run: docker build --tag chat-with-any-website-agent:ci .
+      - name: Smoke test the image
+        run: |
+          docker run --rm --interactive --env COHERE_API_KEY=ci --env WEAVIATE_URL=https://ci.invalid --env WEAVIATE_API_KEY=ci --env GROQ_API_KEY=ci chat-with-any-website-agent:ci python - <<'PY'
+          import importlib.util
+          import os
+
+          from chat_with_any_website_agent.web import STATIC_DIR, create_app_from_environment
+
+          assert (STATIC_DIR / "index.html").is_file(), "the page files are missing from the image"
+          assert os.getuid() != 0, "the image runs as root"
+          for tool in ("pytest", "mypy", "ruff"):
+              assert importlib.util.find_spec(tool) is None, f"{tool} is in the image"
+          create_app_from_environment()  # the settings and the application can be built from the environment
+          print("the image looks right")
+          PY
+      - name: Check that no local or secret files are in the image
+        run: >-
+          docker run --rm chat-with-any-website-agent:ci
+          sh -c 'test "$(ls -A /app)" = ".venv" && test ! -e /app/.venv/.env'
+
   audit:
     name: Dependency audit
     runs-on: ubuntu-24.04
@@ -128,7 +160,7 @@ jobs:
   ci-gate:
     name: CI passed
     if: always()
-    needs: [lint, test, build, audit, workflows]
+    needs: [lint, test, build, docker, audit, workflows]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}

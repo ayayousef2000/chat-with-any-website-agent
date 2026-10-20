@@ -36,6 +36,9 @@
 - name: github_actions
   color: 000000
   description: GitHub Actions update
+- name: docker
+  color: 0db7ed
+  description: Docker image update
 - name: pre-commit
   color: fab005
   description: Pre-commit hook update
