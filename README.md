@@ -84,6 +84,16 @@ It prints the answer, the sources it cites, the pages it opened by following lin
 - `--tenant NAME` uses another Weaviate tenant, for example `demo`.
 - `--no-steps` hides the steps.
 
+Or try it in a browser:
+
+```bash
+uv run agent-web
+```
+
+Then open <http://127.0.0.1:8000>, paste the address of a page or PDF file, click **Load page** and ask a question. Answers cite their sources as `[1]`, `[2]`: click one to see the excerpt it comes from, with the sentence that answers the question highlighted. Follow-up questions such as "When did he start it?" are understood from the last few turns of the chat. **Refresh** loads the page again, **Delete data** removes the stored copy and **New chat** starts a new conversation.
+
+The page is for one person on one computer. The server listens on `127.0.0.1` only, refuses requests that do not come from its own page, and does one thing at a time because of the limits of the free plans. It stores pages in the Weaviate tenant `demo` (change it with `--tenant`) and follows links as the settings allow.
+
 Evaluate the agent on a question set:
 
 ```bash
@@ -129,7 +139,6 @@ The tests use fakes, so they call no external service. Commits follow [Conventio
 
 - A check of the answer by a model, to catch claims that the cited excerpt does not support.
 - A better choice of the first link to open.
-- A local web page to try the agent.
 
 ## License
 
