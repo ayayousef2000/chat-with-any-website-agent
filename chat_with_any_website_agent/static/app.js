@@ -102,7 +102,7 @@ function startSlowNotice(setStatus, message, delay = 8000) {
   return () => clearTimeout(timer);
 }
 
-const SLOW_ANSWER_NOTICE = "Still working. The free plans of the AI services limit how fast questions are answered, so this can take a minute or more.";
+const SLOW_ANSWER_NOTICE = "Still working… this can take up to a minute.";
 
 // Only absolute http(s) addresses may become links.
 function safeUrl(value) {
