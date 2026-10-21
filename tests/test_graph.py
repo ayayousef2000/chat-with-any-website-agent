@@ -346,6 +346,43 @@ def test_an_answer_without_a_citation_is_corrected_once_and_then_given() -> None
     assert f"Why it was rejected: {NO_CITATION_PROBLEM}" in repair_request
 
 
+INVENTED_FIGURE = "The pass statement does nothing and was added in 1991 [1]."
+INVENTED_PROBLEM = "The answer states 1991, which the excerpts it cites do not contain."
+
+
+def test_an_answer_with_a_figure_that_the_excerpts_do_not_state_is_corrected_with_the_reason() -> None:
+    setup = _setup([ENOUGH], [INVENTED_FIGURE, CITED_ANSWER])
+
+    result = setup.agent.ask(QUESTION)
+
+    assert not result.abstained
+    assert result.answer == CITED_ANSWER
+    assert f"Checked the citations: {INVENTED_PROBLEM}" in result.steps
+    repair_request = setup.answerer.requests[1][0][-1]["content"]
+    assert f"Your previous answer:\n{INVENTED_FIGURE}" in repair_request
+    assert f"Why it was rejected: {INVENTED_PROBLEM}" in repair_request
+
+
+def test_a_model_that_cannot_support_its_figure_ends_in_an_abstention_with_the_rejected_draft() -> None:
+    setup = _setup([ENOUGH], [INVENTED_FIGURE, "It was added in 1992 [1]."])
+
+    result = setup.agent.ask(QUESTION)
+
+    assert result.abstained
+    assert result.answer == NOT_COVERED_MESSAGE
+    assert result.draft == "It was added in 1992 [1]."
+    assert result.reason == "The answer states 1992, which the excerpts it cites do not contain."
+
+
+def test_a_figure_of_the_question_may_be_repeated_in_the_answer() -> None:
+    setup = _setup([ENOUGH], ["In Python 3.14 the pass statement does nothing [1]."])
+
+    result = setup.agent.ask("What does the pass statement do in Python 3.14?")
+
+    assert not result.abstained
+    assert len(setup.answerer.requests) == 1  # no correction was needed
+
+
 def test_a_citation_in_other_brackets_is_accepted_and_written_with_plain_brackets() -> None:
     answer = f"The pass statement does nothing {chr(0x3010)}1{chr(0x3011)}."
     setup = _setup([ENOUGH], [answer])

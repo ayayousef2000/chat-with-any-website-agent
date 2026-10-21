@@ -99,6 +99,14 @@ def test_the_rewrite_prompt_forbids_adding_facts_that_are_not_in_the_question() 
     assert "Do not add names, dates or other facts that are not in the question." in system
 
 
+@pytest.mark.parametrize("prompt", [ANSWER_PROMPT, REPAIR_PROMPT])
+def test_the_answer_prompts_forbid_a_figure_that_the_excerpts_do_not_write(prompt: ChatPromptTemplate) -> None:
+    system, _ = _texts(prompt, question="q", excerpts="e", answer="a", problem="p")
+
+    assert "only if it is written in the excerpts" in system
+    assert "never count items or work out a figure yourself" in system
+
+
 @pytest.mark.parametrize("prompt", [GRADE_PROMPT, ANSWER_PROMPT])
 def test_the_prompts_that_show_excerpts_treat_them_as_untrusted_text(prompt: ChatPromptTemplate) -> None:
     system, _ = _texts(prompt, question="q", excerpts="e")

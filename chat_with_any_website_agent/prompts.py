@@ -146,6 +146,8 @@ _ANSWER_RULES = (
     "Answer the question using only the numbered excerpts. "
     "End every sentence of the answer with the number of the excerpt that supports it, in square brackets, like [1] "
     "or [1][2]. An answer without such citations is rejected. For example: The loop ends when the list is empty [1]. "
+    "State a number, date or count only if it is written in the excerpts: never count items or work out a figure "
+    "yourself. "
     "Answer in the language of the question and be concise. "
     f"If the excerpts do not contain the answer, reply with exactly {NOT_COVERED_MARKER} and nothing else. "
     + _UNTRUSTED

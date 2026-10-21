@@ -156,6 +156,124 @@ def test_the_share_of_words_that_must_be_backed_can_be_changed() -> None:
     assert not verify_answer(answer, [PASS], min_support=0.9).valid
 
 
+# --- numbers ---
+
+TREE = Document(
+    page_content=(
+        "## Exception hierarchy\nThe class hierarchy for built-in exceptions is:\n"
+        "BaseException\n ├── BaseExceptionGroup\n ├── GeneratorExit\n ├── KeyboardInterrupt\n"
+        " ├── SystemExit\n └── Exception\n      ├── ArithmeticError\n      └── LookupError"
+    ),
+    metadata={
+        "url": "https://docs.example/exceptions",
+        "title": "Built-in Exceptions",
+        "heading": "Exception hierarchy",
+    },
+)
+RELEASE = Document(
+    page_content="Python 3.11 was released on 2022-10-24. It added exception groups. The download is 25,000 KB large.",
+    metadata={"url": "https://docs.example/news", "title": "What's new", "heading": ""},
+)
+
+
+def test_a_count_that_the_excerpt_does_not_state_is_not_valid() -> None:
+    # The model counted the lines of the tree. The words of the sentence match the excerpt, but the figure is not there.
+    answer = "Python's built-in exception hierarchy defines 68 distinct exception classes [1]."
+
+    result = verify_answer(answer, [TREE])
+
+    assert not result.valid
+    assert result.problem == "The answer states 68, which the excerpts it cites do not contain."
+    assert result.citations == ()
+
+
+def test_a_number_that_the_cited_excerpt_writes_is_valid() -> None:
+    assert verify_answer("Python 3.11 added exception groups [1].", [RELEASE]).valid
+
+
+def test_the_first_number_that_is_not_written_is_the_one_named() -> None:
+    result = verify_answer("Python 3.11 was released in 2023 with 40 features [1].", [RELEASE])
+
+    assert result.problem == "The answer states 2023, which the excerpts it cites do not contain."
+
+
+def test_a_number_may_be_written_with_or_without_groups_of_thousands() -> None:
+    assert verify_answer("The download is 25000 KB large [1].", [RELEASE]).valid
+    assert verify_answer("The download is 25,000 KB large [1].", [RELEASE]).valid
+
+
+def test_digits_of_another_script_are_the_same_number_as_western_digits() -> None:
+    excerpt = Document(
+        page_content="ظهرت النسخة الأولى سنة ١٩٨٩ في هولندا", metadata={"url": "u", "title": "بايثون", "heading": ""}
+    )
+
+    assert verify_answer("ظهرت النسخة الأولى سنة 1989 [1].", [excerpt]).valid
+    assert not verify_answer("ظهرت النسخة الأولى سنة 1991 [1].", [excerpt]).valid
+
+
+def test_a_small_number_is_accepted_when_the_excerpt_writes_it_as_a_word() -> None:
+    excerpt = Document(
+        page_content="The function takes two arguments and returns the sum.", metadata={"url": "u", "title": "T"}
+    )
+
+    assert verify_answer("The function takes 2 arguments [1].", [excerpt]).valid
+    assert not verify_answer("The function takes 3 arguments [1].", [excerpt]).valid
+    for larger in ("12", "25", "34", "89", "10"):  # only the digits 0 to 9 are read as words
+        result = verify_answer(f"The function takes {larger} arguments [1].", [excerpt])
+        assert result.problem == f"The answer states {larger}, which the excerpts it cites do not contain."
+
+
+def test_a_number_that_the_question_asks_about_may_be_repeated_in_the_answer() -> None:
+    answer = "In Python 3.12 the pass statement does nothing [1]."
+
+    assert not verify_answer(answer, [PASS]).valid
+    assert verify_answer(answer, [PASS], question="What does pass do in Python 3.12?").valid
+
+
+def test_the_number_that_starts_a_line_of_a_list_is_not_a_figure_of_the_answer() -> None:
+    answer = "1. The pass statement does nothing [1].\n2. The pass statement is a placeholder in code [1]."
+
+    assert verify_answer(answer, [PASS]).valid
+
+
+def test_ordinals_and_the_digits_in_names_are_not_numbers_of_the_answer() -> None:
+    assert verify_answer("The pass statement does nothing in the 2nd chapter on x86 machines [1].", [PASS]).valid
+
+
+def test_a_version_is_read_by_its_first_two_parts_and_its_tail_is_not_a_number_of_its_own() -> None:
+    assert verify_answer("Python 3.11.4 added exception groups [1].", [RELEASE]).valid
+
+    result = verify_answer("Python 3.12.1 added exception groups [1].", [RELEASE])
+
+    assert result.problem == "The answer states 3.12, which the excerpts it cites do not contain."
+
+
+def test_a_number_in_a_sentence_without_a_citation_is_not_checked() -> None:
+    answer = "About 90 percent of people like it. The pass statement does nothing [1]."
+
+    assert verify_answer(answer, [PASS]).valid
+
+
+def test_a_number_is_checked_against_the_excerpts_that_its_own_sentence_cites() -> None:
+    answer = "A set has no duplicate elements and 25000 KB is the size [2]."
+
+    assert not verify_answer(
+        answer, [RELEASE, SET]
+    ).valid  # the 25,000 is in excerpt 1, which this sentence does not cite
+
+
+def test_a_number_in_the_title_of_the_cited_page_counts_as_written() -> None:
+    excerpt = Document(
+        page_content="The statement does nothing at all.", metadata={"url": "u", "title": "Python 3.14 tutorial"}
+    )
+
+    assert verify_answer("In Python 3.14 the statement does nothing at all [1].", [excerpt]).valid
+
+
+def test_an_answer_without_numbers_is_not_affected() -> None:
+    assert verify_answer("The pass statement does nothing [1].", [PASS]).valid
+
+
 # --- other languages ---
 
 

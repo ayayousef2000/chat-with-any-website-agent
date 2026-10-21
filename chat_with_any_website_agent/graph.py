@@ -500,7 +500,7 @@ class SourceAgent:
         return _written(state, answer, "Wrote an answer.")
 
     def _verify(self, state: AgentState) -> AgentState:
-        result = verify_answer(state["answer"], state["documents"])
+        result = verify_answer(state["answer"], state["documents"], question=state["question"])
         if result.valid:
             return {
                 "answer": result.answer,  # with the citations written as [1]
