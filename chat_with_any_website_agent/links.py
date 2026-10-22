@@ -166,29 +166,59 @@ _COMMON_WORDS = frozenset(
 _STEM_CHARS = 6
 
 
-def shortlist_links(links: Sequence[Link], topic: str, limit: int) -> tuple[Link, ...]:
+def shortlist_links(links: Sequence[Link], topic: str, limit: int, near: Sequence[str] = ()) -> tuple[Link, ...]:
     """Choose the links worth showing to a model: the ones that share the most words with a topic.
 
     A page can have hundreds of links, and every one shown to the model costs tokens. When there are more links than
     ``limit``, the ones whose text or address share the most words with the topic come first (word endings are
-    ignored, so ``statements`` matches ``statement``), and ties keep the order of the page. When all of them fit, they
-    are returned as they are, in the order of the page.
+    ignored, so ``statements`` matches ``statement``). Among links that match equally, the ones near the pages in
+    ``near`` come first, and then the order of the page decides. The links near those pages are also listed before the
+    others, because the answer to a question about a part of a website is usually in the same part, and a model gives
+    the first links of a list more weight. When all the links fit and ``near`` is empty, they are returned as they are,
+    in the order of the page.
 
     Args:
         links: The candidate links, in the order of the page.
         topic: What is being looked for, for example the question and what the pages read so far were missing.
         limit: The most links to return.
+        near: The addresses of the pages the question was asked about. The part of a page is its directory, the
+            address up to the last slash: ``/3/tutorial/index.html`` is in ``/3/tutorial/``, so a link to
+            ``/3/tutorial/errors.html`` is near it and a link to ``/3/reference/index.html`` is not. A page at the top
+            of the site (``/`` or ``/index.html``) says nothing about a part of it, so no link is near it.
 
     Returns:
         At most ``limit`` links.
     """
-    if len(links) <= limit:
-        return tuple(links)
-    wanted = _stems(topic)
-    scored = [
-        (-len(wanted & _stems(f"{link.text} {urlsplit(link.url).path}")), index) for index, link in enumerate(links)
-    ]
-    return tuple(links[index] for _, index in sorted(scored)[:limit])
+    if limit <= 0:
+        return ()
+    sections = _sections(near)
+    chosen = list(links)
+    if len(chosen) > limit:
+        wanted = _stems(topic)
+        scored = [
+            (-len(wanted & _stems(f"{link.text} {urlsplit(link.url).path}")), not _is_in(link, sections), index)
+            for index, link in enumerate(chosen)
+        ]
+        chosen = [chosen[index] for *_, index in sorted(scored)[:limit]]
+    if sections:  # a stable sort: each group keeps its order
+        chosen.sort(key=lambda link: not _is_in(link, sections))
+    return tuple(chosen)
+
+
+def _sections(pages: Iterable[str]) -> tuple[tuple[str, str], ...]:
+    """The site and directory of each page, leaving out the pages at the top of their site."""
+    sections = []
+    for page in pages:
+        directory = urlsplit(page).path.rpartition("/")[0] + "/"
+        if directory != "/":
+            sections.append((site_of(page), directory))
+    return tuple(sections)
+
+
+def _is_in(link: Link, sections: Iterable[tuple[str, str]]) -> bool:
+    return any(
+        site_of(link.url) == site and urlsplit(link.url).path.startswith(directory) for site, directory in sections
+    )
 
 
 def _stems(text: str) -> set[str]:

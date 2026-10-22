@@ -535,7 +535,8 @@ class SourceAgent:
     def _choose(self, state: AgentState) -> AgentState:
         """Ask the model which of the links not opened yet are likely to hold what the pages read so far lack."""
         missing = state["grade"].reason or NOT_ENOUGH_REASON
-        shortlist = shortlist_links(state["frontier"], f"{state['question']} {missing}", MAX_CANDIDATES)
+        given = [url for url in state["urls"] or [] if url not in state["followed"]]  # the pages the question is about
+        shortlist = shortlist_links(state["frontier"], f"{state['question']} {missing}", MAX_CANDIDATES, near=given)
         room = min(MAX_LINKS_PER_HOP, self._limits.max_pages - len(state["followed"]))
         values = {
             "question": state["question"],

@@ -113,8 +113,9 @@ def _setup(
     limits: AgentLimits = LIMITS,
     links: Mapping[str, tuple[Link, ...]] | None = None,
     refused: dict[str, str] | None = None,
+    pages: dict[str, list[str]] | None = None,
 ) -> Setup:
-    store = PagedStore(PAGES)
+    store = PagedStore(PAGES if pages is None else pages)
     fake_links = FakeLinks(LINKS if links is None else links, refused or {})
     grader, answerer = ScriptedClient(*grader_replies), ScriptedClient(*answer_replies)
     retriever = SourceRetriever(store, FakeEmbedder(), FakeReranker())
@@ -399,6 +400,50 @@ def test_the_links_most_like_the_question_are_shown_when_there_are_too_many() ->
     setup.agent.ask(QUESTION, [START])
 
     assert setup.links.opened == [wanted.url]  # the link that shares words with the question is number 1
+
+
+def test_the_links_in_the_same_part_of_the_site_as_the_given_page_are_listed_first() -> None:
+    index = "https://docs.example/3/tutorial/index.html"
+    chapter = Link("https://docs.example/3/tutorial/controlflow.html", "4. More Control Flow Tools")
+    reference = Link("https://docs.example/3/reference/index.html", "The Language Reference")
+    setup = _setup(
+        [NOT_ENOUGH, choose(1), NOT_ENOUGH],
+        links={index: (reference, chapter)},  # the page lists the reference first
+        pages={index: [CONTENTS], chapter.url: [PASS_TEXT]},
+        limits=AgentLimits(24, 12, 0, 1, 5),
+    )
+
+    setup.agent.ask(QUESTION, [index])
+
+    shown = setup.grader.requests[1][0][-1]["content"].split("Links:\n")[1].splitlines()
+    assert shown == [
+        "1. 4. More Control Flow Tools - /3/tutorial/controlflow.html",
+        "2. The Language Reference - /3/reference/index.html",
+    ]
+    assert setup.links.opened == [chapter.url]  # number 1 is the link near the page that was given
+
+
+def test_a_page_that_was_followed_does_not_move_the_part_that_is_preferred() -> None:
+    index = "https://docs.example/3/tutorial/index.html"
+    library = Link("https://docs.example/3/library/os.html", "os")
+    chapter = Link("https://docs.example/3/tutorial/controlflow.html", "4. More Control Flow Tools")
+    reference = Link("https://docs.example/3/reference/index.html", "The Language Reference")
+    statements = Link("https://docs.example/3/reference/simple_stmts.html", "7. Simple statements")
+    setup = _setup(
+        [NOT_ENOUGH, choose(3), NOT_ENOUGH, choose(), NOT_ENOUGH],
+        links={index: (library, chapter, reference), reference.url: (statements,)},
+        pages={index: [CONTENTS], reference.url: [CONTENTS]},
+        limits=AgentLimits(24, 12, 0, 2, 5),
+    )
+
+    setup.agent.ask(QUESTION, [index])  # the first hop opens the reference, which is not near the page that was given
+
+    second = setup.grader.requests[3][0][-1]["content"].split("Links:\n")[1].splitlines()
+    assert [line.split(" - ")[1] for line in second] == [
+        "/3/tutorial/controlflow.html",  # near the page that was given
+        "/3/library/os.html",
+        "/3/reference/simple_stmts.html",  # near the page that was followed, which does not count
+    ]
 
 
 def test_a_link_that_leads_to_a_page_already_read_adds_nothing() -> None:
