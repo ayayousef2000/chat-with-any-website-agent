@@ -616,8 +616,11 @@ def _after_read_pages(state: AgentState) -> Literal["grade", "retrieve", "abstai
 
 
 def _page_problem(result: PageRead, named: str) -> str:
-    """What to tell the person when the pages they named have no text: the note of the document, or that it is short."""
-    base = f"This PDF file has no text for {named}."
+    """What to tell the person when the pages they named have no text: the note of the document, or that it is short.
+
+    It starts with the sentence of every refusal, so that a refusal is recognized as one, and then gives the reason.
+    """
+    base = f"{NOT_COVERED_MESSAGE} This PDF file has no text for {named}."
     return f"{base} {result.note}".strip() if result.note else f"{base} The document may have fewer pages."
 
 

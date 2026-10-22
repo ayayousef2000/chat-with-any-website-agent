@@ -137,9 +137,10 @@ def test_a_page_without_text_is_refused_at_once_with_a_message_that_says_why() -
 
     result = setup.agent.ask("What does page 40 say?", [PAPER])
 
-    message = "This PDF file has no text for page 40. The document may have fewer pages."
+    message = f"{NOT_COVERED_MESSAGE} This PDF file has no text for page 40. The document may have fewer pages."
     assert result.abstained
-    assert result.answer == message  # the person is told what is wrong and not only that nothing was found
+    assert result.answer.startswith("The source does not cover this question")  # it is recognized as a refusal
+    assert result.answer == message  # and the person is told what is wrong, not only that nothing was found
     assert result.reason == message
     assert result.citations == ()
     assert result.llm_calls == 0  # no model was asked
@@ -156,7 +157,7 @@ def test_the_note_of_the_document_explains_why_a_page_has_no_text() -> None:
 
     result = setup.agent.ask("What does page 4 say?", [PAPER])
 
-    assert result.answer == f"This PDF file has no text for page 4. {note}"
+    assert result.answer == f"{NOT_COVERED_MESSAGE} This PDF file has no text for page 4. {note}"
 
 
 def test_a_missing_page_is_said_in_the_steps_when_another_named_page_has_text() -> None:
