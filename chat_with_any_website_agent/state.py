@@ -23,6 +23,7 @@ class AgentState(TypedDict, total=False):
             those pages: nothing else is searched. It is emptied when the sources are not PDF files.
         page_problem: What to tell the person when the named pages have no text, for example that a page does not
             exist or has no text that can be selected.
+        expansions: How many times the excerpts were widened with the text next to the best ones.
         query: The text the search uses. It starts as the question and is replaced when a rewrite is made.
         rewrites: How many times the query was rewritten.
         documents: The excerpts of the latest search, best first.
@@ -50,6 +51,7 @@ class AgentState(TypedDict, total=False):
     urls: list[str] | None
     pages: list[int]
     page_problem: str
+    expansions: int
     query: str
     rewrites: int
     documents: list[Document]
@@ -87,6 +89,7 @@ def new_state(question: str, urls: list[str] | None = None) -> AgentState:
         "question": question,
         "urls": urls,
         "pages": [],
+        "expansions": 0,
         "query": question,
         "rewrites": 0,
         "repairs": 0,

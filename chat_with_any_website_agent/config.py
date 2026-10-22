@@ -74,6 +74,9 @@ class Settings(BaseSettings):
     )  # the most pages loaded by following links; 0 keeps to the given pages
     agent_max_llm_calls: int = Field(default=12, gt=0)
     agent_max_rewrites: int = Field(default=2, ge=0)
+    # How many times the excerpts are widened with the text next to the best ones when they are not enough. It is off
+    # (0) until it has been measured; each expansion needs 2 more steps and 1 more call than the limits above allow.
+    agent_max_expansions: int = Field(default=0, ge=0)
 
     # Limits for one evaluation run
     eval_max_cohere_calls: int = Field(default=300, gt=0)

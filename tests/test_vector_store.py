@@ -671,6 +671,48 @@ def test_a_section_is_read_by_its_heading_in_the_order_of_the_source() -> None:
     assert call["return_properties"] == ["url", "title", "heading", "text", "chunk_index"]
 
 
+def test_chunks_are_read_by_their_places_in_the_order_of_the_source() -> None:
+    store, collection, _ = _store()
+    collection.query.objects = [_section_chunk("Intro", 4, "before"), _section_chunk("Intro", 6, "after")]
+
+    chunks = store.fetch_chunks(SOURCE, [6, 4, 6])
+
+    assert [(chunk.chunk_index, chunk.text) for chunk in chunks] == [(4, "before"), (6, "after")]
+    assert all(chunk.url == SOURCE and chunk.title == "Paper" and chunk.score is None for chunk in chunks)
+    [call] = collection.query.fetch_calls
+    expected: Any = Filter.all_of(
+        [Filter.by_property("url").equal(SOURCE), Filter.by_property("chunk_index").contains_any([4, 6])]
+    )
+    assert call["filters"].filters == expected.filters  # each place once, in order
+    assert call["limit"] == 2
+    assert [(sort.prop, sort.ascending) for sort in call["sort"].sorts] == [("chunk_index", True)]
+    assert call["return_properties"] == ["url", "title", "heading", "text", "chunk_index"]
+
+
+def test_a_chunk_that_was_not_asked_for_or_is_of_another_source_is_left_out() -> None:
+    store, collection, _ = _store()
+    other = _section_chunk("Intro", 4)
+    other.properties["url"] = "https://other.example/"
+    collection.query.objects = [other, _section_chunk("Intro", 5), _section_chunk("Intro", 6)]
+
+    chunks = store.fetch_chunks(SOURCE, [6])
+
+    assert [chunk.chunk_index for chunk in chunks] == [6]
+
+
+def test_no_places_are_asked_for_without_a_request_to_weaviate() -> None:
+    store, collection, _ = _store()
+
+    assert store.fetch_chunks(SOURCE, []) == []
+    assert collection.query.fetch_calls == []
+
+
+def test_a_place_with_no_chunk_gives_no_chunk() -> None:
+    store, _, _ = _store()
+
+    assert store.fetch_chunks(SOURCE, [99]) == []
+
+
 def test_a_section_with_a_similar_heading_is_left_out() -> None:
     # Weaviate matches the words of a heading, so "Page 5 notes" or "5 Page" can come back with "Page 5".
     store, collection, _ = _store()
