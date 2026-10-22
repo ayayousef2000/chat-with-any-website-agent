@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Protocol, Self
 from urllib.parse import urlsplit
 
-from chat_with_any_website_agent.chunking import chunk_text, contextualize
+from chat_with_any_website_agent.chunking import chunk_pages, chunk_text, contextualize
 from chat_with_any_website_agent.cleaning import clean_text
 from chat_with_any_website_agent.errors import ExtractionError, FetchError, InvalidURLError
 from chat_with_any_website_agent.extraction import NO_TEXT_MESSAGE, ExtractedPage, extract_page
@@ -119,6 +119,7 @@ class _Prepared:
     page: ExtractedPage
     text: str
     validators: Validators
+    by_page: bool = False  # a PDF file, whose text is chunked a page at a time
 
     @property
     def fingerprint(self) -> str:
@@ -318,10 +319,11 @@ class SourceIngestor:
         text = clean_text(page.text)
         if not text.strip():
             raise ExtractionError(NO_TEXT_MESSAGE)
-        return _Prepared(page=page, text=text, validators=document.validators)
+        return _Prepared(page=page, text=text, validators=document.validators, by_page=document.kind == "pdf")
 
     def _store_prepared(self, url: str, prepared: _Prepared, *, expired: bool, changed: bool) -> IngestResult:
-        chunks = chunk_text(prepared.text, self._chunk_size, self._chunk_overlap)
+        split = chunk_pages if prepared.by_page else chunk_text
+        chunks = split(prepared.text, self._chunk_size, self._chunk_overlap)
         if not chunks:
             raise ExtractionError(NO_TEXT_MESSAGE)
         title = prepared.page.title

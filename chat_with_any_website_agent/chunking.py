@@ -11,6 +11,8 @@ _HEADING = re.compile(r"(#{1,6}) +(.+)")
 _PARAGRAPH_BREAK = re.compile(r"\n{2,}")
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 _JOINER = "\n"
+# The start of a section of the text of a PDF file: the heading of a page, or of the note at the end.
+_SECTION_START = re.compile(r"^(?=## (?:Page \d+|Note)$)", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -116,6 +118,30 @@ def chunk_text(text: str, chunk_size: int, chunk_overlap: int) -> list[Chunk]:
 
     if current:
         chunks.append(_to_chunk(current))
+    return chunks
+
+
+def chunk_pages(text: str, chunk_size: int, chunk_overlap: int) -> list[Chunk]:
+    """Split the text of a PDF file into chunks that never cross a page.
+
+    The text of a PDF file is a ``## Page N`` section for each page, and possibly a ``## Note`` section at the end. Each
+    of those sections is chunked on its own, so a chunk holds the text of one page, its heading is that page, and the
+    overlap between chunks never repeats the end of the page before. Chunked as one text, a short page would be merged
+    into the chunk of the page before it and be labelled with that page, and the overlap at the start of a chunk would
+    repeat the end of the previous page under the heading of the previous page.
+
+    Args:
+        text: The text of a PDF file, in sections.
+        chunk_size: Target maximum number of characters per chunk.
+        chunk_overlap: Number of trailing characters repeated at the start of the next chunk of the same page.
+
+    Returns:
+        The chunks in reading order.
+    """
+    chunks: list[Chunk] = []
+    for section in _SECTION_START.split(text):
+        if section.strip():
+            chunks.extend(chunk_text(section, chunk_size, chunk_overlap))
     return chunks
 
 

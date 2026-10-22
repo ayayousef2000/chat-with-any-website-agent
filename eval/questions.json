@@ -151,6 +151,34 @@
         "category": "pdf_page"
       },
       {
+        "question": "What does page 3 of the paper say about the number of layers in the encoder?",
+        "reference": "The encoder is a stack of N = 6 identical layers (page 3).",
+        "must_contain": ["N = 6"],
+        "category": "page_specific"
+      },
+      {
+        "question": "According to page 5, how many parallel attention heads does the model use?",
+        "reference": "The model uses h = 8 parallel attention layers, or heads (page 5).",
+        "must_contain": ["h = 8"],
+        "category": "page_specific"
+      },
+      {
+        "question": "Which optimizer does page 7 name for training the models?",
+        "reference": "The Adam optimizer (page 7).",
+        "must_contain": ["Adam optimizer"],
+        "category": "page_specific"
+      },
+      {
+        "question": "How many parallel attention heads does the model use, according to page 1?",
+        "answerable": false,
+        "category": "page_specific_unanswerable"
+      },
+      {
+        "question": "What does page 40 of the paper say?",
+        "answerable": false,
+        "category": "page_specific_unanswerable"
+      },
+      {
         "question": "How much memory in gigabytes does each GPU used for training have?",
         "answerable": false,
         "category": "unanswerable"

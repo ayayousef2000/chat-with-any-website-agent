@@ -30,7 +30,7 @@ Every question runs within hard limits on steps, model calls and rewrites, and t
 
 Also included:
 
-- **PDF reading** page by page, with the page number in the excerpt heading.
+- **PDF reading** page by page, with the page number in the excerpt heading. A question can name a page ("What does page 5 say about the heads?") and is then answered from that page only. A PDF with no selectable text, or mostly scans, is refused.
 - **Safe fetching.** Only public addresses on the standard ports are fetched, every redirect is checked again, and size and time limits apply.
 - **Several languages.** The questions and the sources can be in different languages (the evaluation includes Arabic).
 - **Free-plan friendly.** Calls and tokens are counted, and requests are paced to stay within the limits of a plan.

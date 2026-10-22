@@ -36,6 +36,7 @@ from langgraph.graph import END, START, StateGraph
 
 from chat_with_any_website_agent.citations import Citation, format_excerpts, verify_answer
 from chat_with_any_website_agent.links import shortlist_links
+from chat_with_any_website_agent.pages import describe_pages, pages_in_question
 from chat_with_any_website_agent.prompts import (
     ANSWER_PROMPT,
     CHOICE_PARSER,
@@ -61,6 +62,7 @@ if TYPE_CHECKING:
     from chat_with_any_website_agent.config import Settings
     from chat_with_any_website_agent.links import Link
     from chat_with_any_website_agent.navigation import FollowResult
+    from chat_with_any_website_agent.pages import PageRead
     from chat_with_any_website_agent.retriever import SourceRetriever
 
 logger = logging.getLogger(__name__)
@@ -224,6 +226,8 @@ def next_step(state: AgentState, limits: AgentLimits) -> Route:
     if state["grade"].sufficient:
         fits = calls_left >= 1 and steps_used + ANSWER_STEPS <= limits.max_steps
         return "generate" if fits else "abstain"
+    if state.get("pages"):
+        return "abstain"  # the answer has to come from the named pages, so no other link or search can help
     hop = (
         bool(state.get("frontier"))
         and not state.get("links_closed", False)
@@ -242,6 +246,14 @@ def next_step(state: AgentState, limits: AgentLimits) -> Route:
     return "rewrite" if retry else "abstain"
 
 
+class PageSource(Protocol):
+    """What the agent needs to read the pages of a PDF file that a question names; ``PageReader`` provides it."""
+
+    def read(self, urls: Sequence[str], numbers: Sequence[int], query: str) -> PageRead:
+        """Read the named pages of the PDF files among the sources."""
+        ...
+
+
 class SourceAgent:
     """Answers questions about stored sources, or says that they do not cover them."""
 
@@ -252,6 +264,8 @@ class SourceAgent:
         grade_model: BaseChatModel,
         limits: AgentLimits,
         links: LinkSource | None = None,
+        *,
+        pages: PageSource | None = None,
     ) -> None:
         """Create the agent.
 
@@ -262,10 +276,13 @@ class SourceAgent:
                 small one.
             limits: The limits for one question.
             links: Reads the links of stored pages and opens them. Without it the agent stays on the pages it is given.
+            pages: Reads the pages of a PDF file that the question names. Without it a page number in a question is
+                only part of the question.
         """
         self._retriever = retriever
         self._limits = limits
         self._links = links
+        self._pages = pages
         json_mode = {"response_format": {"type": "json_object"}, "temperature": 0}
         grader = grade_model.bind(**json_mode)
         self._grade_chain = GRADE_PROMPT | grader | GRADE_PARSER
@@ -305,6 +322,7 @@ class SourceAgent:
     def _build(self) -> Any:
         graph = StateGraph(AgentState)
         graph.add_node("analyze", self._analyze)
+        graph.add_node("read_pages", self._read_pages)
         graph.add_node("retrieve", self._retrieve)
         graph.add_node("grade", self._grade)
         graph.add_node("choose", self._choose)
@@ -315,7 +333,10 @@ class SourceAgent:
         graph.add_node("repair", self._repair)
         graph.add_node("abstain", self._abstain)
         graph.add_edge(START, "analyze")
-        graph.add_edge("analyze", "retrieve")
+        graph.add_conditional_edges("analyze", _after_analyze, {"read_pages": "read_pages", "retrieve": "retrieve"})
+        graph.add_conditional_edges(
+            "read_pages", _after_read_pages, {"grade": "grade", "retrieve": "retrieve", "abstain": "abstain"}
+        )
         graph.add_conditional_edges("retrieve", _after_retrieve, {"grade": "grade", "abstain": "abstain"})
         graph.add_conditional_edges(
             "grade",
@@ -341,11 +362,42 @@ class SourceAgent:
 
     def _analyze(self, state: AgentState) -> AgentState:
         question = " ".join(state["question"].split())
+        named = pages_in_question(question) if self._pages is not None and state["urls"] else ()
         return {
             "question": question,
             "query": question,
+            "pages": list(named),
             "frontier": self._frontier(state["urls"], []),
             "steps": ["Read the question."],
+        }
+
+    def _read_pages(self, state: AgentState) -> AgentState:
+        """Read the pages that the question names, instead of searching by meaning.
+
+        The answer has to come from those pages: a search of the whole document could answer about another page. When
+        the sources are not PDF files, the numbers are not pages, and the question is searched as usual.
+        """
+        named = describe_pages(state["pages"])
+        reader = self._pages
+        if reader is None:  # the question names pages only when the agent can read them, so this is not reached
+            return {"pages": [], "steps": [f"The question names {named}, but this agent cannot read pages."]}
+        result = reader.read(state["urls"] or [], state["pages"], state["question"])
+        if not result.is_pdf:
+            return {
+                "pages": [],
+                "steps": [f"The question names {named}, but no source is a PDF file: searched as usual."],
+            }
+        if not result.documents:
+            problem = _page_problem(result, named)
+            return {"documents": [], "page_problem": problem, "reason": problem, "steps": [f"Read {named}: {problem}"]}
+        found = f"Read {named} and found {len(result.documents)} excerpt(s)"
+        if result.missing:
+            found += f"; no text was found for {describe_pages(result.missing)}"
+        keys = [_excerpt_key(document) for document in result.documents]
+        return {
+            "documents": list(result.documents),
+            "seen": list(dict.fromkeys(keys)),
+            "steps": [found + "."],
         }
 
     def _frontier(self, pages: Sequence[str] | None, tried: Sequence[str]) -> list[Link]:
@@ -534,7 +586,7 @@ class SourceAgent:
         reason = state.get("reason") or _grade_reason(state)
         return {
             "abstained": True,
-            "answer": NOT_COVERED_MESSAGE,
+            "answer": state.get("page_problem") or NOT_COVERED_MESSAGE,
             "citations": [],
             "reason": reason,
             "steps": [f"Decided not to answer: {reason}"],
@@ -549,6 +601,24 @@ def _describe_link(link: Link) -> str:
 def _excerpt_key(document: Document) -> str:
     """What identifies an excerpt: its source and its place in the source."""
     return f"{document.metadata.get('url', '')}#{document.metadata.get('chunk_index', '')}"
+
+
+def _after_analyze(state: AgentState) -> Literal["read_pages", "retrieve"]:
+    """A question that names pages of a PDF file reads those pages; any other question searches."""
+    return "read_pages" if state.get("pages") else "retrieve"
+
+
+def _after_read_pages(state: AgentState) -> Literal["grade", "retrieve", "abstain"]:
+    """Grade the pages that were read. When the sources are not PDF files the question is searched as usual."""
+    if not state.get("pages"):
+        return "retrieve"
+    return "grade" if state["documents"] else "abstain"
+
+
+def _page_problem(result: PageRead, named: str) -> str:
+    """What to tell the person when the pages they named have no text: the note of the document, or that it is short."""
+    base = f"This PDF file has no text for {named}."
+    return f"{base} {result.note}".strip() if result.note else f"{base} The document may have fewer pages."
 
 
 def _after_retrieve(state: AgentState) -> Literal["grade", "abstain"]:

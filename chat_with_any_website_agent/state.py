@@ -19,6 +19,10 @@ class AgentState(TypedDict, total=False):
     Attributes:
         question: The question as it was asked.
         urls: The sources to search in, or ``None`` to search all of them. Pages the agent follows are added to it.
+        pages: The pages of a PDF file that the question names. While it is not empty the answer has to come from
+            those pages: nothing else is searched. It is emptied when the sources are not PDF files.
+        page_problem: What to tell the person when the named pages have no text, for example that a page does not
+            exist or has no text that can be selected.
         query: The text the search uses. It starts as the question and is replaced when a rewrite is made.
         rewrites: How many times the query was rewritten.
         documents: The excerpts of the latest search, best first.
@@ -44,6 +48,8 @@ class AgentState(TypedDict, total=False):
 
     question: str
     urls: list[str] | None
+    pages: list[int]
+    page_problem: str
     query: str
     rewrites: int
     documents: list[Document]
@@ -80,6 +86,7 @@ def new_state(question: str, urls: list[str] | None = None) -> AgentState:
     return {
         "question": question,
         "urls": urls,
+        "pages": [],
         "query": question,
         "rewrites": 0,
         "repairs": 0,
