@@ -236,3 +236,91 @@ def test_links_that_match_equally_keep_the_order_of_the_page() -> None:
 
 def test_a_limit_of_zero_shows_nothing() -> None:
     assert shortlist_links(_numbered(3), "page", limit=0) == ()
+
+
+# --- links near the pages the question is about ---
+
+TUTORIAL_START = "https://docs.example/3/tutorial/index.html"
+TUTORIAL_CHAPTER = Link("https://docs.example/3/tutorial/errors.html", "Errors")
+REFERENCE_INDEX = Link("https://docs.example/3/reference/index.html", "The Language Reference")
+
+
+def test_links_in_the_same_part_of_the_site_are_listed_first_even_when_all_of_them_fit() -> None:
+    links = (REFERENCE_INDEX, TUTORIAL_CHAPTER)
+
+    assert shortlist_links(links, "", limit=5, near=[TUTORIAL_START]) == (TUTORIAL_CHAPTER, REFERENCE_INDEX)
+
+
+def test_links_keep_the_order_of_the_page_inside_each_group() -> None:
+    inside = tuple(Link(f"https://docs.example/3/tutorial/page-{number}.html", "") for number in range(3))
+    outside = tuple(Link(f"https://docs.example/3/library/page-{number}.html", "") for number in range(3))
+
+    shortlisted = shortlist_links(
+        (outside[0], inside[0], outside[1], inside[1], outside[2], inside[2]), "", 9, [TUTORIAL_START]
+    )
+
+    assert shortlisted == (*inside, *outside)
+
+
+def test_a_directory_inside_the_part_of_the_page_is_near_it() -> None:
+    deeper = Link("https://docs.example/3/tutorial/sub/page.html", "")
+
+    assert shortlist_links((REFERENCE_INDEX, deeper), "", 5, [TUTORIAL_START]) == (deeper, REFERENCE_INDEX)
+
+
+def test_a_directory_whose_name_only_starts_the_same_way_is_not_near() -> None:
+    lookalike = Link("https://docs.example/3/tutorial-extras/page.html", "")
+
+    assert shortlist_links((lookalike, TUTORIAL_CHAPTER), "", 5, [TUTORIAL_START]) == (TUTORIAL_CHAPTER, lookalike)
+
+
+@pytest.mark.parametrize("page", ["https://docs.example/", "https://docs.example/index.html", "https://docs.example"])
+def test_a_page_at_the_top_of_the_site_prefers_no_link(page: str) -> None:
+    links = (REFERENCE_INDEX, TUTORIAL_CHAPTER)
+
+    assert shortlist_links(links, "", limit=5, near=[page]) == links
+
+
+def test_a_link_to_another_site_is_not_near_a_page_with_the_same_path() -> None:
+    elsewhere = Link("https://other.example/3/tutorial/errors.html", "")
+
+    assert shortlist_links((elsewhere, TUTORIAL_CHAPTER), "", 5, [TUTORIAL_START]) == (TUTORIAL_CHAPTER, elsewhere)
+
+
+def test_the_site_is_compared_without_a_leading_www() -> None:
+    page = "https://www.docs.example/3/tutorial/index.html"
+
+    assert shortlist_links((REFERENCE_INDEX, TUTORIAL_CHAPTER), "", 5, [page]) == (TUTORIAL_CHAPTER, REFERENCE_INDEX)
+
+
+def test_several_pages_make_each_of_their_parts_near() -> None:
+    library = Link("https://docs.example/3/library/os.html", "")
+    other = Link("https://docs.example/3/faq/index.html", "")
+    pages = [TUTORIAL_START, "https://docs.example/3/library/index.html"]
+
+    assert shortlist_links((other, library, TUTORIAL_CHAPTER), "", 5, pages) == (library, TUTORIAL_CHAPTER, other)
+
+
+def test_words_in_common_with_the_topic_still_decide_which_links_are_kept() -> None:
+    wanted = Link("https://docs.example/3/library/stdtypes.html", "Built-in Types and append")
+    near = tuple(Link(f"https://docs.example/3/tutorial/page-{number}.html", "") for number in range(6))
+
+    shortlisted = shortlist_links((*near, wanted), "What does append do?", 2, [TUTORIAL_START])
+
+    assert wanted in shortlisted
+    assert shortlisted == (near[0], wanted)  # the near link that is kept is listed before it
+
+
+def test_among_links_that_match_equally_the_near_ones_are_kept() -> None:
+    far = tuple(Link(f"https://docs.example/3/library/page-{number}.html", "") for number in range(5))
+
+    shortlisted = shortlist_links((*far, TUTORIAL_CHAPTER), "nothing in common", 2, [TUTORIAL_START])
+
+    assert shortlisted == (TUTORIAL_CHAPTER, far[0])
+
+
+def test_no_pages_near_change_nothing() -> None:
+    links = (REFERENCE_INDEX, TUTORIAL_CHAPTER)
+
+    assert shortlist_links(links, "", limit=5) == links
+    assert shortlist_links(links, "", limit=5, near=[]) == links
