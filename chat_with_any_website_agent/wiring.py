@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from chat_with_any_website_agent.chat_model import GroqChatModel
+from chat_with_any_website_agent.context import ContextExpander
 from chat_with_any_website_agent.embeddings import CohereEmbedder
 from chat_with_any_website_agent.graph import AgentLimits, SourceAgent
 from chat_with_any_website_agent.groq_client import GroqClient
@@ -137,6 +138,7 @@ def build_runtime(
         limits,
         follower if follow_links else None,
         pages=PageReader(store, reranker),
+        context=ContextExpander(store),
     )
     return AgentRuntime(
         agent=agent,

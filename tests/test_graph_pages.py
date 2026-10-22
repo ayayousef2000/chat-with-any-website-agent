@@ -255,3 +255,13 @@ def test_the_route_after_the_grade_keeps_to_the_named_pages(enough: bool, pages:
     state = _graded(enough=enough, pages=pages)
 
     assert next_step(state, LIMITS) == expected  # type: ignore[arg-type]
+
+
+def test_the_node_that_reads_pages_does_nothing_harmful_when_the_agent_cannot_read_them() -> None:
+    # A question names pages only when the agent has a reader, so this is a guard that is not reached in a run.
+    setup = _setup(FOUND, with_reader=False)
+
+    result = setup.agent._read_pages({"pages": [5], "urls": [PAPER], "question": QUESTION})
+
+    assert result == {"pages": [], "steps": ["The question names page 5, but this agent cannot read pages."]}
+    assert setup.pages.calls == []
