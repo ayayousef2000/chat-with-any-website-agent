@@ -15,7 +15,7 @@ from weaviate.classes.aggregate import GroupByAggregate
 from weaviate.classes.config import Configure, DataType, Property, Tokenization
 from weaviate.classes.data import DataObject
 from weaviate.classes.init import AdditionalConfig, Auth, Timeout
-from weaviate.classes.query import Filter, HybridFusion, MetadataQuery
+from weaviate.classes.query import Filter, HybridFusion, MetadataQuery, Sort
 from weaviate.exceptions import UnexpectedStatusCodeError, WeaviateConnectionError, WeaviateTimeoutError
 
 from chat_with_any_website_agent.errors import StoreError
@@ -486,6 +486,43 @@ class WeaviateStore:
         if not response.objects:
             return None
         return _as_text(response.objects[0].properties.get("title"))
+
+    def fetch_section(self, url: str, heading: str, limit: int) -> list[RetrievedChunk]:
+        """Read the chunks of one section of a stored source, in the order of the source.
+
+        The section is found by its heading, which Weaviate matches by its words, so the heading of every chunk that
+        comes back is compared again with the one asked for, and a section with a similar heading is left out.
+
+        Args:
+            url: The address of the source.
+            heading: The heading of the section, for example ``Page 5`` for a page of a PDF file.
+            limit: The most chunks to return.
+
+        Returns:
+            The chunks of the section, first chunk first. Empty when the source has no such section.
+        """
+        section = Filter.all_of([_url_filter(url), Filter.by_property("heading").equal(heading)])
+        response = self._retrier.call(
+            lambda: self._collection.query.fetch_objects(
+                filters=section,
+                limit=limit,
+                sort=Sort.by_property("chunk_index"),
+                return_properties=["url", "title", "heading", "text", "chunk_index"],
+            ),
+            name="Weaviate",
+        )
+        chunks = [
+            RetrievedChunk(
+                url=str(found.properties["url"]),
+                title=str(found.properties["title"]),
+                heading=str(found.properties.get("heading") or ""),
+                text=str(found.properties["text"]),
+                chunk_index=int(found.properties["chunk_index"]),
+                score=None,
+            )
+            for found in response.objects
+        ]
+        return [chunk for chunk in chunks if chunk.heading == heading]
 
     def search(
         self,

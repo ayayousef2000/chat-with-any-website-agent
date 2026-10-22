@@ -14,6 +14,7 @@ from chat_with_any_website_agent.graph import AgentLimits, SourceAgent
 from chat_with_any_website_agent.groq_client import GroqClient
 from chat_with_any_website_agent.ingest import SourceIngestor
 from chat_with_any_website_agent.navigation import LinkFollower
+from chat_with_any_website_agent.pages import PageReader
 from chat_with_any_website_agent.reranking import CohereReranker
 from chat_with_any_website_agent.retriever import SourceRetriever
 from chat_with_any_website_agent.robots import RobotsChecker
@@ -129,7 +130,14 @@ def build_runtime(
     retriever = SourceRetriever(store, embedder, reranker)
     answer_model = GroqChatModel(answerer)
     grade_model = GroqChatModel(grader)
-    agent = SourceAgent(retriever, answer_model, grade_model, limits, follower if follow_links else None)
+    agent = SourceAgent(
+        retriever,
+        answer_model,
+        grade_model,
+        limits,
+        follower if follow_links else None,
+        pages=PageReader(store, reranker),
+    )
     return AgentRuntime(
         agent=agent,
         ingestor=ingestor,

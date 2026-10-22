@@ -68,12 +68,71 @@ def test_reading_stops_when_the_time_is_used_up_and_the_text_says_so(monkeypatch
     assert "## Note" in page.text
 
 
-def test_a_page_without_text_is_skipped_but_the_others_are_kept() -> None:
+def test_a_page_without_text_is_skipped_but_the_others_are_kept_and_the_text_names_it() -> None:
     page = extract_pdf(make_pdf([["First page text."], [], ["Third page text."]]), URL)
 
     assert "## Page 1" in page.text
     assert "## Page 2" not in page.text
     assert "## Page 3" in page.text
+    assert page.text.endswith(
+        "## Note\n\nNo text can be selected on page 2, which may be scans or images, so a question about them "
+        "cannot be answered."
+    )
+
+
+def test_several_pages_without_text_are_named_in_words() -> None:
+    pages = [["Text."], [], ["Text."], ["Text."], [], ["Text."], ["Text."], [], ["Text."], ["Text."]]
+
+    page = extract_pdf(make_pdf(pages), URL)
+
+    assert "No text can be selected on pages 2, 5 and 8," in page.text
+
+
+def test_a_long_list_of_empty_pages_is_cut_and_counted() -> None:
+    pages = [["Text."] * 1] * 30 + [[]] * 12 + [["Text."]] * 30
+
+    page = extract_pdf(make_pdf(pages), URL)
+
+    assert "pages 31, 32, 33, 34, 35, 36, 37, 38, 39, 40 and 2 more," in page.text
+
+
+def test_the_note_about_empty_pages_comes_before_the_note_about_the_pages_that_were_not_read() -> None:
+    pages = [["Text."], [], ["Text."], ["Text."], ["Text."], ["Text."]]
+
+    page = extract_pdf(make_pdf(pages), URL, max_pages=4)
+
+    assert page.text.endswith(
+        "## Note\n\nNo text can be selected on page 2, which may be scans or images, so a question about them cannot "
+        "be answered.\n\nOnly the first 4 of the 6 pages of this document were read."
+    )
+
+
+def test_a_document_where_half_of_the_pages_are_empty_is_kept() -> None:
+    page = extract_pdf(make_pdf([["Text."], [], ["Text."], []]), URL)
+
+    assert "No text can be selected on pages 2 and 4," in page.text
+
+
+def test_a_document_that_is_mostly_scans_is_refused_with_a_plain_message() -> None:
+    with pytest.raises(ExtractionError) as caught:
+        extract_pdf(make_pdf([["Text."], [], [], []]), URL)
+
+    assert str(caught.value) == pdf.PDF_MOSTLY_SCANNED_MESSAGE
+    assert "Most pages" in str(caught.value)
+
+
+def test_only_the_pages_that_were_read_count_when_the_share_of_empty_pages_is_judged() -> None:
+    # Three pages are read and one of them is empty; the empty pages after the limit are never looked at.
+    document = make_pdf([["Text."], [], ["Text."], [], [], [], []])
+
+    page = extract_pdf(document, URL, max_pages=3)
+
+    assert "No text can be selected on page 2," in page.text
+    assert "Only the first 3 of the 7 pages" in page.text
+
+
+def test_a_document_without_empty_pages_has_no_note() -> None:
+    assert "## Note" not in extract_pdf(make_pdf([["Text one."], ["Text two."]]), URL).text
 
 
 # --- the title ---

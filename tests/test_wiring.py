@@ -7,6 +7,7 @@ from chat_with_any_website_agent import wiring
 from chat_with_any_website_agent.config import Settings
 from chat_with_any_website_agent.graph import AgentLimits
 from chat_with_any_website_agent.navigation import LinkFollower
+from chat_with_any_website_agent.pages import PageReader
 from chat_with_any_website_agent.retrying import Retrier
 from chat_with_any_website_agent.robots import RobotsChecker
 from chat_with_any_website_agent.usage import UsageCounter
@@ -245,6 +246,30 @@ def test_the_agent_stays_on_its_pages_when_following_links_is_switched_off(monke
     runtime = build_runtime(settings, UsageCounter(), follow_links=False)
 
     assert runtime.agent._links is None
+
+
+def test_the_agent_can_read_the_pages_that_a_question_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings(monkeypatch)
+    _fakes(monkeypatch)
+
+    runtime = build_runtime(settings, UsageCounter())
+
+    reader = runtime.agent._pages
+    assert isinstance(reader, PageReader)
+    assert reader._store is runtime.store  # the pages are read from the same store
+    assert reader._reranker is runtime.cohere[1]  # and the most relevant excerpts are kept with the same reranker
+
+
+def test_the_agent_that_stays_on_its_pages_can_still_read_the_pages_of_a_pdf_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(monkeypatch)
+    _fakes(monkeypatch)
+
+    runtime = build_runtime(settings, UsageCounter(), follow_links=False)
+
+    assert runtime.agent._links is None
+    assert isinstance(runtime.agent._pages, PageReader)
 
 
 def test_the_runtime_gives_the_parts_that_the_baselines_share_with_the_agent(monkeypatch: pytest.MonkeyPatch) -> None:
