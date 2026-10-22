@@ -595,6 +595,18 @@ def test_a_pdf_file_is_read_page_by_page_and_stored_with_its_title() -> None:
     assert "Second page with the details." in text
 
 
+def test_the_chunks_of_a_pdf_file_never_cross_a_page_and_are_named_by_their_page() -> None:
+    pdf = make_pdf([["First page of the manual."], ["Second page with the details."], ["Third page, the last."]])
+    store, embedder = FakeStore(), FakeEmbedder()
+    fetch = FakeFetch(FetchedDocument(kind="pdf", body=pdf, url="https://example.com/manual.pdf"))
+
+    _ingestor(store, embedder, fetch).ingest("https://example.com/manual.pdf")
+
+    chunks = store.replaced[0][2]
+    assert [chunk.heading for chunk in chunks] == ["Page 1", "Page 2", "Page 3"]
+    assert [chunk.text.count("## Page") for chunk in chunks] == [1, 1, 1]  # each chunk holds its own page only
+
+
 def test_a_pdf_file_is_stored_without_links() -> None:
     pdf = make_pdf([["First page of the manual."]], title="Manual")
     store, embedder = FakeStore(), FakeEmbedder()

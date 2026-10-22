@@ -11,6 +11,8 @@ def test_a_new_state_starts_with_the_question_as_the_query_and_the_counters_at_z
     assert state == {
         "question": "What does pass do?",
         "urls": ["https://docs.example/control"],
+        "pages": [],
+        "expansions": 0,
         "query": "What does pass do?",
         "rewrites": 0,
         "repairs": 0,

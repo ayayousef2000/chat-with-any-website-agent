@@ -25,11 +25,23 @@ PDF_NO_TEXT_MESSAGE = (
     "This PDF has no text that can be selected. It may be a scan or a set of images, which cannot be read. "
     "Try a different document."
 )
+PDF_MOSTLY_SCANNED_MESSAGE = (
+    "Most pages of this PDF have no text that can be selected. It may be a scan or a set of images, which cannot be "
+    "read. Try a different document."
+)
 PDF_PROTECTED_MESSAGE = "This PDF is protected with a password, so it cannot be read. Try a different document."
 PDF_UNREADABLE_MESSAGE = "This PDF could not be read. The file may be damaged. Try a different document."
 
 DEFAULT_MAX_PAGES = 100
 DEFAULT_MAX_SECONDS = 30.0
+
+# A document is refused when more than this share of the pages that were read have no text that can be selected: what
+# is left of it would give answers that are silent about most of the document. A document with fewer such pages is
+# kept, and its text says which pages are empty.
+MAX_EMPTY_SHARE = 0.5
+
+# The most page numbers that the note about empty pages lists.
+MAX_LISTED_PAGES = 10
 
 # A PDF without a title of its own gets the biggest text of its first page, when it is this much bigger than the body
 # text and reads like a title: words, and between these lengths.
@@ -53,11 +65,15 @@ def extract_pdf(
         max_pages: The most pages to read.
         max_seconds: The longest time to spend reading.
 
+    A page with no text that can be selected (a scan or an image) has no section. When there are some, a ``## Note``
+    section says which pages they are, so that a question about one of them is not mistaken for a gap in the document.
+
     Returns:
         The text of the document, its title, and its address.
 
     Raises:
-        ExtractionError: If the file is not a readable PDF, is protected by a password or has no selectable text.
+        ExtractionError: If the file is not a readable PDF, is protected by a password, has no selectable text, or has
+            no selectable text on most of its pages.
     """
     if not data[:1024].lstrip().startswith(b"%PDF-"):
         raise ExtractionError(PDF_UNREADABLE_MESSAGE)
@@ -69,6 +85,7 @@ def extract_pdf(
         started = time.monotonic()
         read = 0
         sections = []
+        empty: list[int] = []  # the pages that were read and have no text
         first_page: list[tuple[float, str]] = []  # the text of page one with its font sizes, to find a title
         for number, page in enumerate(islice(reader.pages, max_pages), start=1):
             if time.monotonic() - started > max_seconds:
@@ -80,6 +97,8 @@ def extract_pdf(
             read = number
             if text:
                 sections.append(f"## Page {number}\n\n{text}")
+            else:
+                empty.append(number)
         title = _pdf_title(reader, url, first_page)
     except ExtractionError:
         raise
@@ -89,9 +108,30 @@ def extract_pdf(
         raise ExtractionError(PDF_UNREADABLE_MESSAGE) from exc
     if not sections:
         raise ExtractionError(PDF_NO_TEXT_MESSAGE)
+    if len(empty) > read * MAX_EMPTY_SHARE:
+        raise ExtractionError(PDF_MOSTLY_SCANNED_MESSAGE)
+    notes = []
+    if empty:
+        notes.append(
+            f"No text can be selected on {_page_list(empty)}, which may be scans or images, so a question about "
+            "them cannot be answered."
+        )
     if read < total:
-        sections.append(f"## Note\n\nOnly the first {read} of the {total} pages of this document were read.")
+        notes.append(f"Only the first {read} of the {total} pages of this document were read.")
+    if notes:
+        sections.append("## Note\n\n" + "\n\n".join(notes))
     return ExtractedPage(url=url, title=title, text="\n\n".join(sections))
+
+
+def _page_list(numbers: list[int]) -> str:
+    """Page numbers in words: ``page 3``, ``pages 3 and 7``, ``pages 3, 7 and 9``, and at most ``MAX_LISTED_PAGES``."""
+    if len(numbers) == 1:
+        return f"page {numbers[0]}"
+    shown = [str(number) for number in numbers[:MAX_LISTED_PAGES]]
+    more = len(numbers) - len(shown)
+    if more:
+        return f"pages {', '.join(shown)} and {more} more"
+    return f"pages {', '.join(shown[:-1])} and {shown[-1]}"
 
 
 def _reflow(text: str) -> str:

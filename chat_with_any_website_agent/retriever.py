@@ -124,10 +124,11 @@ class SourceRetriever(BaseRetriever):
         ranked = self._reranker.rerank(
             query, [contextualize(chunk.title, chunk.heading, chunk.text) for chunk in chunks], self.top_n
         )
-        return [_document(chunks[item.index], item.score) for item in ranked]
+        return [document_from_chunk(chunks[item.index], item.score) for item in ranked]
 
 
-def _document(chunk: RetrievedChunk, rerank_score: float | None) -> Document:
+def document_from_chunk(chunk: RetrievedChunk, rerank_score: float | None) -> Document:
+    """A chunk of a stored source as a LangChain document, with its place and scores in the metadata."""
     return Document(
         page_content=chunk.text,
         metadata={

@@ -4,13 +4,16 @@ The model sees the excerpts as a numbered list and cites them as ``[1]`` or ``[1
 in other styles (lenticular or full-width brackets, with or without a dagger and a label after the number), so
 those are read as citations too and are rewritten as ``[1]``.
 
-The check is plain code, with no model: every number must be an excerpt that exists, and every sentence that cites
-must share its content words with the excerpts it cites. It catches an invented or misplaced citation. It cannot
-judge meaning, and it cannot compare text in two different scripts, so a sentence in another script than its
-excerpt is only checked for its numbers.
+The check is plain code, with no model: every number must be an excerpt that exists, every sentence that cites must
+share its content words with the excerpts it cites, and every number written with digits in such a sentence must be
+written in those excerpts (or in the question). It catches an invented or misplaced citation, and a figure that the
+model made up or worked out itself, such as a count of the lines of a list. It cannot judge meaning, and it cannot
+compare text in two different scripts, so a sentence in another script than its excerpt is only checked for its
+numbers.
 """
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -52,6 +55,13 @@ _MARKER = re.compile(rf"[{_OPENING}](\d+(?:\s*,\s*\d+)*)(?:{_DAGGER}[^{_CLOSING}
 # that "... nothing. [1]" stays one sentence.
 _SENTENCE_BREAK = re.compile(rf"(?<=[.!?{_ARABIC_QUESTION_MARK}])\s+(?!\[)|\n+")
 _WORD = re.compile(r"\w+")
+# A number written with digits, with groups of thousands ("1,000") and decimals ("3.11"). It is not part of a word
+# ("x86", "2nd") and not the tail of a version ("3.11.4" is read as 3.11).
+_NUMBER = re.compile(r"(?<![\w.])\d+(?:,\d{3})*(?:\.\d+)?(?!\w)")
+# The number that starts a line of a numbered list ("1. First step").
+_LIST_MARKER = re.compile(r"^\s*\d+[.)]\s+")
+# The digits 0 to 9 are often written as words in a text, so a small number is also accepted as its English word.
+_SMALL_NUMBER_WORDS = ("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine")
 
 
 @dataclass(frozen=True)
@@ -109,15 +119,20 @@ def format_excerpts(documents: Sequence[Document], max_chars: int = EXCERPT_CHAR
     return "\n\n".join(blocks)
 
 
-def verify_answer(answer: str, documents: Sequence[Document], *, min_support: float = MIN_SUPPORT) -> Verification:
+def verify_answer(
+    answer: str, documents: Sequence[Document], *, min_support: float = MIN_SUPPORT, question: str = ""
+) -> Verification:
     """Check that an answer cites the excerpts it was given, and that each cited sentence is backed by its excerpts.
 
-    A sentence without a citation is not checked, and a sentence that is too short to compare is accepted.
+    A sentence without a citation is not checked, and a sentence that is too short to compare is accepted. A number
+    that a cited sentence writes with digits must be written in the excerpts it cites, or in the question: the answer
+    may not state a figure that the source does not state, such as a count that the model made by itself.
 
     Args:
         answer: The answer of the model, with citations like ``[1]`` or ``[1][2]``.
         documents: The excerpts the model was given, in the order they were numbered.
         min_support: The share of the content words of a cited sentence that must appear in its excerpts.
+        question: The question, whose own numbers an answer may repeat.
 
     Returns:
         Whether the answer holds, and the answer with its citations written as ``[1]``. When it holds, also the
@@ -133,8 +148,15 @@ def verify_answer(answer: str, documents: Sequence[Document], *, min_support: fl
         return Verification(valid=False, problem=problem, answer=answer)
     for sentence in _SENTENCE_BREAK.split(answer):
         cited = sorted(set(_numbers(sentence)))
-        if cited and not _is_supported(sentence, [documents[number - 1] for number in cited], min_support):
+        if not cited:
+            continue
+        evidence = [documents[number - 1] for number in cited]
+        if not _is_supported(sentence, evidence, min_support):
             problem = f"A sentence is not supported by the excerpts it cites: {sentence.strip()}"
+            return Verification(valid=False, problem=problem, answer=answer)
+        invented = _unwritten_number(sentence, _evidence_text(evidence), question)
+        if invented is not None:
+            problem = f"The answer states {invented}, which the excerpts it cites do not contain."
             return Verification(valid=False, problem=problem, answer=answer)
     citations = tuple(_citation(number, documents[number - 1]) for number in sorted(set(numbers)))
     return Verification(valid=True, citations=citations, answer=answer)
@@ -178,11 +200,39 @@ def _words(text: str) -> list[str]:
     return [word for word in words if len(word) >= MIN_WORD_LENGTH or any(character.isdigit() for character in word)]
 
 
+def _evidence_text(documents: Sequence[Document]) -> str:
+    return " ".join(f"{_label(document)} {document.page_content}" for document in documents)
+
+
+def _canonical(number: str) -> str:
+    """A number written with digits of any script as plain digits without groups of thousands."""
+    digits = "".join(str(unicodedata.digit(character)) if character.isdigit() else character for character in number)
+    return digits.replace(",", "")
+
+
+def _unwritten_number(sentence: str, evidence_text: str, question: str) -> str | None:
+    """The first number of a sentence that neither its excerpts nor the question write, as the sentence writes it."""
+    body = _LIST_MARKER.sub("", _MARKER.sub(" ", sentence))
+    found = [match.group() for match in _NUMBER.finditer(body)]
+    if not found:
+        return None
+    known = {_canonical(match.group()) for match in _NUMBER.finditer(f"{evidence_text} {question}")}
+    lowered = evidence_text.casefold()
+    for shown in found:
+        value = _canonical(shown)
+        if value in known:
+            continue
+        if len(value) == 1 and re.search(rf"\b{_SMALL_NUMBER_WORDS[int(value)]}\b", lowered):
+            continue
+        return shown
+    return None
+
+
 def _is_supported(sentence: str, documents: Sequence[Document], min_support: float) -> bool:
     words = _words(_MARKER.sub(" ", sentence))
     if len(words) < MIN_WORDS:
         return True
-    evidence_text = " ".join(f"{_label(document)} {document.page_content}" for document in documents)
+    evidence_text = _evidence_text(documents)
     if _script(sentence) != _script(evidence_text):
         return True  # the words of two scripts cannot be compared
     evidence = {word[:STEM_LENGTH] for word in _words(evidence_text)}

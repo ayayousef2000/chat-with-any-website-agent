@@ -648,6 +648,98 @@ def test_marks_that_are_empty_or_not_text_are_not_known() -> None:
     assert store.source_record(SOURCE) == SourceRecord()
 
 
+def _section_chunk(heading: str, index: int, text: str = "text of the section") -> Any:
+    properties = {"url": SOURCE, "title": "Paper", "heading": heading, "text": text, "chunk_index": index}
+    return SimpleNamespace(properties=properties, metadata=SimpleNamespace(score=None))
+
+
+def test_a_section_is_read_by_its_heading_in_the_order_of_the_source() -> None:
+    store, collection, _ = _store()
+    collection.query.objects = [_section_chunk("Page 5", 7, "first part"), _section_chunk("Page 5", 8, "second part")]
+
+    chunks = store.fetch_section(SOURCE, "Page 5", 20)
+
+    assert [(chunk.chunk_index, chunk.text) for chunk in chunks] == [(7, "first part"), (8, "second part")]
+    assert all(chunk.url == SOURCE and chunk.title == "Paper" and chunk.score is None for chunk in chunks)
+    [call] = collection.query.fetch_calls
+    expected: Any = Filter.all_of(
+        [Filter.by_property("url").equal(SOURCE), Filter.by_property("heading").equal("Page 5")]
+    )
+    assert call["filters"].filters == expected.filters
+    assert call["limit"] == 20
+    assert [(sort.prop, sort.ascending) for sort in call["sort"].sorts] == [("chunk_index", True)]
+    assert call["return_properties"] == ["url", "title", "heading", "text", "chunk_index"]
+
+
+def test_chunks_are_read_by_their_places_in_the_order_of_the_source() -> None:
+    store, collection, _ = _store()
+    collection.query.objects = [_section_chunk("Intro", 4, "before"), _section_chunk("Intro", 6, "after")]
+
+    chunks = store.fetch_chunks(SOURCE, [6, 4, 6])
+
+    assert [(chunk.chunk_index, chunk.text) for chunk in chunks] == [(4, "before"), (6, "after")]
+    assert all(chunk.url == SOURCE and chunk.title == "Paper" and chunk.score is None for chunk in chunks)
+    [call] = collection.query.fetch_calls
+    expected: Any = Filter.all_of(
+        [Filter.by_property("url").equal(SOURCE), Filter.by_property("chunk_index").contains_any([4, 6])]
+    )
+    assert call["filters"].filters == expected.filters  # each place once, in order
+    assert call["limit"] == 2
+    assert [(sort.prop, sort.ascending) for sort in call["sort"].sorts] == [("chunk_index", True)]
+    assert call["return_properties"] == ["url", "title", "heading", "text", "chunk_index"]
+
+
+def test_a_chunk_that_was_not_asked_for_or_is_of_another_source_is_left_out() -> None:
+    store, collection, _ = _store()
+    other = _section_chunk("Intro", 4)
+    other.properties["url"] = "https://other.example/"
+    collection.query.objects = [other, _section_chunk("Intro", 5), _section_chunk("Intro", 6)]
+
+    chunks = store.fetch_chunks(SOURCE, [6])
+
+    assert [chunk.chunk_index for chunk in chunks] == [6]
+
+
+def test_no_places_are_asked_for_without_a_request_to_weaviate() -> None:
+    store, collection, _ = _store()
+
+    assert store.fetch_chunks(SOURCE, []) == []
+    assert collection.query.fetch_calls == []
+
+
+def test_a_place_with_no_chunk_gives_no_chunk() -> None:
+    store, _, _ = _store()
+
+    assert store.fetch_chunks(SOURCE, [99]) == []
+
+
+def test_a_section_with_a_similar_heading_is_left_out() -> None:
+    # Weaviate matches the words of a heading, so "Page 5 notes" or "5 Page" can come back with "Page 5".
+    store, collection, _ = _store()
+    collection.query.objects = [
+        _section_chunk("Page 5", 7),
+        _section_chunk("Page 5 notes", 9),
+        _section_chunk("5 Page", 10),
+    ]
+
+    chunks = store.fetch_section(SOURCE, "Page 5", 20)
+
+    assert [chunk.heading for chunk in chunks] == ["Page 5"]
+
+
+def test_a_source_without_the_section_gives_no_chunks() -> None:
+    store, _, _ = _store()
+
+    assert store.fetch_section(SOURCE, "Page 5", 20) == []
+
+
+def test_a_chunk_without_a_heading_is_read_with_an_empty_heading_and_left_out_of_a_section() -> None:
+    store, collection, _ = _store()
+    collection.query.objects = [_section_chunk(None, 1)]  # type: ignore[arg-type]
+
+    assert store.fetch_section(SOURCE, "Page 5", 20) == []
+
+
 def test_the_title_of_a_source_is_read_from_its_first_chunk() -> None:
     store, collection, _ = _store()
     collection.query.objects = [SimpleNamespace(properties={"title": "Control Flow"})]

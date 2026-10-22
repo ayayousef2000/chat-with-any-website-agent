@@ -3,30 +3,35 @@
 An answer has checked citations. When the source does not cover the question, the graph says so instead.
 The nodes run in this order:
 
-1. ``analyze`` tidies the question and lists the links of the pages it was given.
-2. ``retrieve`` searches the pages and keeps the best excerpts. After a rewrite, a search that finds only excerpts
+1. ``analyze`` tidies the question, lists the links of the pages it was given and finds the pages of a PDF file that
+   the question names. A question that names pages goes to ``read_pages``, any other question to ``retrieve``.
+2. ``read_pages`` reads the named pages of the PDF file instead of searching. The answer has to come from those pages,
+   so the graph never searches elsewhere for it. A page that has no text ends the question in ``abstain``.
+3. ``retrieve`` searches the pages and keeps the best excerpts. After a rewrite, a search that finds only excerpts
    that were found before ends the question in ``abstain``: the same excerpts would get the same grade.
-3. ``grade`` asks a model whether the excerpts are enough. If they are, ``generate`` writes the answer. If they are
-   not, the graph first looks for the answer on other pages of the site: ``choose`` shows a model a short list of the
-   links not opened yet, as numbers, and ``follow`` opens the ones it chose (the site's ``robots.txt`` allowing) and
-   the graph searches all the pages again. When no link is worth opening, or none can be opened any more, and a retry
-   fits in the limits, ``rewrite`` makes a better query and the graph goes back to ``retrieve``. Otherwise the graph
-   goes to ``abstain``.
-4. ``generate`` writes the answer. If the model says that the excerpts hold no answer the graph goes to ``abstain``,
+4. ``grade`` asks a model whether the excerpts are enough. If they are, ``generate`` writes the answer. If they are
+   not, the graph first widens them: ``expand`` adds the chunks next to the best excerpts, which are graded again,
+   because the text that was cut between two chunks is often what is missing. Then it looks for the answer on other
+   pages of the site: ``choose`` shows a model a short list of the links not opened yet, as numbers, and ``follow``
+   opens the ones it chose (the site's ``robots.txt`` allowing) and the graph searches all the pages again. When no
+   link is worth opening, or none can be opened any more, and a retry fits in the limits, ``rewrite`` makes a better
+   query and the graph goes back to ``retrieve``. Otherwise the graph goes to ``abstain``.
+5. ``generate`` writes the answer. If the model says that the excerpts hold no answer the graph goes to ``abstain``,
    otherwise to ``verify``.
-5. ``verify`` checks the citations in plain code. If they hold, the graph ends with the answer. If they do not and
-   the limits allow, ``repair`` shows the model its answer and the problem and asks it once to correct the answer,
-   which is checked again. Otherwise the graph goes to ``abstain``.
-6. ``abstain`` ends the graph with the message that the source does not cover the question.
+6. ``verify`` checks the citations and the figures in plain code. If they hold, the graph ends with the answer. If
+   they do not and the limits allow, ``repair`` shows the model its answer and the problem and asks it once to correct
+   the answer, which is checked again. Otherwise the graph goes to ``abstain``.
+7. ``abstain`` ends the graph with the message that the source does not cover the question.
 
-Five limits keep a question from running away: the retries (``max_rewrites``), the times links are chosen
-(``max_link_hops``), the pages loaded by following links (``max_pages``), the calls to the language model
-(``max_llm_calls``) and the nodes run (``max_steps``). The graph looks ahead, so that it stops before a limit is hit
-rather than in the middle of a path. LangGraph's own recursion limit stays as a last safeguard.
+Six limits keep a question from running away: the retries (``max_rewrites``), the times the excerpts are widened
+(``max_expansions``), the times links are chosen (``max_link_hops``), the pages loaded by following links
+(``max_pages``), the calls to the language model (``max_llm_calls``) and the nodes run (``max_steps``). The graph looks
+ahead, so that it stops before a limit is hit rather than in the middle of a path. LangGraph's own recursion limit
+stays as a last safeguard.
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal, Protocol, Self
 
 from langchain_core.exceptions import OutputParserException
@@ -36,6 +41,7 @@ from langgraph.graph import END, START, StateGraph
 
 from chat_with_any_website_agent.citations import Citation, format_excerpts, verify_answer
 from chat_with_any_website_agent.links import shortlist_links
+from chat_with_any_website_agent.pages import describe_pages, pages_in_question
 from chat_with_any_website_agent.prompts import (
     ANSWER_PROMPT,
     CHOICE_PARSER,
@@ -61,6 +67,7 @@ if TYPE_CHECKING:
     from chat_with_any_website_agent.config import Settings
     from chat_with_any_website_agent.links import Link
     from chat_with_any_website_agent.navigation import FollowResult
+    from chat_with_any_website_agent.pages import PageRead
     from chat_with_any_website_agent.retriever import SourceRetriever
 
 logger = logging.getLogger(__name__)
@@ -73,6 +80,12 @@ RECURSION_MARGIN = 2
 ANSWER_STEPS = 3  # generate, verify and, when the check fails, abstain
 RETRY_STEPS = 6  # rewrite, retrieve, grade, and then an answer
 RETRY_CALLS = 3  # rewrite, grade and generate
+
+# Widening the excerpts takes expand and a new grade, and then an answer. An expansion that finds nothing to add is
+# shorter, so these are what a whole expansion can cost.
+EXPAND_STEPS = 2
+EXPAND_CALLS = 1  # the new grade
+EXPAND_ANSWER_CALLS = EXPAND_CALLS + 1
 
 # Choosing links and opening them takes choose, follow, retrieve and grade, and then an answer. A hop that finds
 # nothing to open is shorter, so these are what a whole hop can cost.
@@ -98,7 +111,7 @@ STEP_LIMIT_REASON = "The limit of steps was reached."
 UNREADABLE_GRADE_REASON = "The verdict on the excerpts could not be read."
 NOTHING_NEW_NOTE = "A new search found nothing new."
 
-type Route = Literal["generate", "choose", "rewrite", "abstain"]
+type Route = Literal["generate", "expand", "choose", "rewrite", "abstain"]
 
 
 @dataclass(frozen=True)
@@ -111,6 +124,8 @@ class AgentLimits:
         max_rewrites: The most times the search query is rewritten.
         max_link_hops: The most times the agent chooses links to open. Zero keeps it on the pages it was given.
         max_pages: The most pages loaded by following links. Zero keeps it on the pages it was given.
+        max_expansions: The most times the excerpts are widened with the text next to the best ones. Zero switches it
+            off.
     """
 
     max_steps: int
@@ -118,6 +133,7 @@ class AgentLimits:
     max_rewrites: int
     max_link_hops: int = 0
     max_pages: int = 0
+    max_expansions: int = 0
 
     @classmethod
     def from_settings(cls, settings: Settings) -> Self:
@@ -128,6 +144,7 @@ class AgentLimits:
             max_rewrites=settings.agent_max_rewrites,
             max_link_hops=settings.agent_max_link_hops,
             max_pages=settings.agent_max_pages,
+            max_expansions=settings.agent_max_expansions,
         )
 
     @property
@@ -146,10 +163,17 @@ class AgentLimits:
             A note for each limit that is too small to complete every hop, every retry and an answer. Empty when they
             all fit.
         """
-        # read, each search and grade, each hop, each rewrite, an answer
-        steps_needed = HOP_STEPS * self.hops + 3 * self.max_rewrites + 3 + ANSWER_STEPS
-        calls_needed = HOP_CALLS * self.hops + 2 * self.max_rewrites + 2  # each choice, grade and rewrite, the answer
-        wanted = (f"{self.hops} link hop(s), " if self.hops else "") + f"{self.max_rewrites} rewrite(s) and an answer"
+        # read, each search and grade, each expansion, each hop, each rewrite, an answer
+        steps_needed = (
+            HOP_STEPS * self.hops + EXPAND_STEPS * self.max_expansions + 3 * self.max_rewrites + 3 + ANSWER_STEPS
+        )
+        # each choice, new grade and rewrite, the answer
+        calls_needed = HOP_CALLS * self.hops + EXPAND_CALLS * self.max_expansions + 2 * self.max_rewrites + 2
+        wanted = (
+            (f"{self.hops} link hop(s), " if self.hops else "")
+            + (f"{self.max_expansions} expansion(s), " if self.max_expansions else "")
+            + f"{self.max_rewrites} rewrite(s) and an answer"
+        )
         skipped = "hops and retries" if self.hops else "retries"
         notes = []
         if self.max_steps < steps_needed:
@@ -216,14 +240,25 @@ def next_step(state: AgentState, limits: AgentLimits) -> Route:
 
     Returns:
         ``generate`` when the excerpts are enough and an answer fits in the limits. When they are not enough:
-        ``choose`` when there are links left to open and a whole hop fits, then ``rewrite`` when a whole retry fits,
-        otherwise ``abstain``.
+        ``abstain`` when the question names pages, because the answer has to come from them; ``expand`` when the
+        excerpts can still be widened and a whole expansion fits; ``choose`` when there are links left to open and a
+        whole hop fits; then ``rewrite`` when a whole retry fits; otherwise ``abstain``.
     """
     calls_left = limits.max_llm_calls - state["llm_calls"]
     steps_used = len(state["steps"])
     if state["grade"].sufficient:
         fits = calls_left >= 1 and steps_used + ANSWER_STEPS <= limits.max_steps
         return "generate" if fits else "abstain"
+    if state.get("pages"):
+        return "abstain"  # the answer has to come from the named pages, so no other link or search can help
+    widen = (
+        state.get("expansions", 0) < limits.max_expansions
+        and bool(state["documents"])
+        and calls_left >= EXPAND_ANSWER_CALLS
+        and steps_used + EXPAND_STEPS + ANSWER_STEPS <= limits.max_steps
+    )
+    if widen:
+        return "expand"  # the text next to the best excerpts is the cheapest place to look for what is missing
     hop = (
         bool(state.get("frontier"))
         and not state.get("links_closed", False)
@@ -242,6 +277,22 @@ def next_step(state: AgentState, limits: AgentLimits) -> Route:
     return "rewrite" if retry else "abstain"
 
 
+class PageSource(Protocol):
+    """What the agent needs to read the pages of a PDF file that a question names; ``PageReader`` provides it."""
+
+    def read(self, urls: Sequence[str], numbers: Sequence[int], query: str) -> PageRead:
+        """Read the named pages of the PDF files among the sources."""
+        ...
+
+
+class ContextSource(Protocol):
+    """What the agent needs to widen the excerpts; ``ContextExpander`` provides it."""
+
+    def around(self, documents: Sequence[Document], reach: int = 1) -> list[Document]:
+        """The chunks next to the best excerpts that are not among the excerpts yet."""
+        ...
+
+
 class SourceAgent:
     """Answers questions about stored sources, or says that they do not cover them."""
 
@@ -252,6 +303,9 @@ class SourceAgent:
         grade_model: BaseChatModel,
         limits: AgentLimits,
         links: LinkSource | None = None,
+        *,
+        pages: PageSource | None = None,
+        context: ContextSource | None = None,
     ) -> None:
         """Create the agent.
 
@@ -262,10 +316,20 @@ class SourceAgent:
                 small one.
             limits: The limits for one question.
             links: Reads the links of stored pages and opens them. Without it the agent stays on the pages it is given.
+            pages: Reads the pages of a PDF file that the question names. Without it a page number in a question is
+                only part of the question.
+            context: Finds the text next to the best excerpts. Without it the excerpts are never widened, whatever
+                ``max_expansions`` says.
         """
         self._retriever = retriever
         self._limits = limits
         self._links = links
+        self._pages = pages
+        self._context = context
+        # The limits as the routes see them: the excerpts can be widened only when there is something to widen them
+        # with, and the routes after a choice of links or a hop never widen them (that came before the hop).
+        self._routing = limits if context is not None else replace(limits, max_expansions=0)
+        self._plain = replace(limits, max_expansions=0)
         json_mode = {"response_format": {"type": "json_object"}, "temperature": 0}
         grader = grade_model.bind(**json_mode)
         self._grade_chain = GRADE_PROMPT | grader | GRADE_PARSER
@@ -305,8 +369,10 @@ class SourceAgent:
     def _build(self) -> Any:
         graph = StateGraph(AgentState)
         graph.add_node("analyze", self._analyze)
+        graph.add_node("read_pages", self._read_pages)
         graph.add_node("retrieve", self._retrieve)
         graph.add_node("grade", self._grade)
+        graph.add_node("expand", self._expand)
         graph.add_node("choose", self._choose)
         graph.add_node("follow", self._follow)
         graph.add_node("rewrite", self._rewrite)
@@ -315,12 +381,26 @@ class SourceAgent:
         graph.add_node("repair", self._repair)
         graph.add_node("abstain", self._abstain)
         graph.add_edge(START, "analyze")
-        graph.add_edge("analyze", "retrieve")
+        graph.add_conditional_edges("analyze", _after_analyze, {"read_pages": "read_pages", "retrieve": "retrieve"})
+        graph.add_conditional_edges(
+            "read_pages", _after_read_pages, {"grade": "grade", "retrieve": "retrieve", "abstain": "abstain"}
+        )
         graph.add_conditional_edges("retrieve", _after_retrieve, {"grade": "grade", "abstain": "abstain"})
         graph.add_conditional_edges(
             "grade",
             self._after_grade,
-            {"generate": "generate", "choose": "choose", "rewrite": "rewrite", "abstain": "abstain"},
+            {
+                "generate": "generate",
+                "expand": "expand",
+                "choose": "choose",
+                "rewrite": "rewrite",
+                "abstain": "abstain",
+            },
+        )
+        graph.add_conditional_edges(
+            "expand",
+            self._after_expand,
+            {"grade": "grade", "expand": "expand", "choose": "choose", "rewrite": "rewrite", "abstain": "abstain"},
         )
         graph.add_conditional_edges(
             "choose", self._after_choose, {"follow": "follow", "rewrite": "rewrite", "abstain": "abstain"}
@@ -341,11 +421,42 @@ class SourceAgent:
 
     def _analyze(self, state: AgentState) -> AgentState:
         question = " ".join(state["question"].split())
+        named = pages_in_question(question) if self._pages is not None and state["urls"] else ()
         return {
             "question": question,
             "query": question,
+            "pages": list(named),
             "frontier": self._frontier(state["urls"], []),
             "steps": ["Read the question."],
+        }
+
+    def _read_pages(self, state: AgentState) -> AgentState:
+        """Read the pages that the question names, instead of searching by meaning.
+
+        The answer has to come from those pages: a search of the whole document could answer about another page. When
+        the sources are not PDF files, the numbers are not pages, and the question is searched as usual.
+        """
+        named = describe_pages(state["pages"])
+        reader = self._pages
+        if reader is None:  # the question names pages only when the agent can read them, so this is not reached
+            return {"pages": [], "steps": [f"The question names {named}, but this agent cannot read pages."]}
+        result = reader.read(state["urls"] or [], state["pages"], state["question"])
+        if not result.is_pdf:
+            return {
+                "pages": [],
+                "steps": [f"The question names {named}, but no source is a PDF file: searched as usual."],
+            }
+        if not result.documents:
+            problem = _page_problem(result, named)
+            return {"documents": [], "page_problem": problem, "reason": problem, "steps": [f"Read {named}: {problem}"]}
+        found = f"Read {named} and found {len(result.documents)} excerpt(s)"
+        if result.missing:
+            found += f"; no text was found for {describe_pages(result.missing)}"
+        keys = [_excerpt_key(document) for document in result.documents]
+        return {
+            "documents": list(result.documents),
+            "seen": list(dict.fromkeys(keys)),
+            "steps": [found + "."],
         }
 
     def _frontier(self, pages: Sequence[str] | None, tried: Sequence[str]) -> list[Link]:
@@ -395,7 +506,31 @@ class SourceAgent:
         return {"grade": grade, "llm_calls": calls, "steps": [f"Graded the excerpts: {verdict}."]}
 
     def _after_grade(self, state: AgentState) -> Route:
-        return next_step(state, self._limits)
+        return next_step(state, self._routing)
+
+    def _expand(self, state: AgentState) -> AgentState:
+        """Add the chunks next to the best excerpts, which may hold what the excerpts lack."""
+        done = state.get("expansions", 0)
+        context = self._context
+        added = context.around(state["documents"], reach=done + 1) if context is not None else []
+        if not added:
+            return {"expansions": done + 1, "fresh": 0, "steps": ["Looked next to the best excerpts: nothing to add."]}
+        keys = [_excerpt_key(document) for document in added]
+        seen = state.get("seen", [])
+        return {
+            "documents": [*state["documents"], *added],
+            "seen": [*seen, *(key for key in dict.fromkeys(keys) if key not in seen)],
+            "fresh": len(added),
+            "expansions": done + 1,
+            "steps": [f"Added {len(added)} excerpt(s) next to the best ones."],
+        }
+
+    def _after_expand(self, state: AgentState) -> Literal["grade", "expand", "choose", "rewrite", "abstain"]:
+        """Grade the widened excerpts. When nothing was added they would get the same grade, so go on from the last."""
+        if state.get("fresh", 0) > 0:
+            return "grade"
+        route = next_step(state, self._routing)
+        return "abstain" if route == "generate" else route  # the last grade was not enough, so not "generate"
 
     def _choose(self, state: AgentState) -> AgentState:
         """Ask the model which of the links not opened yet are likely to hold what the pages read so far lack."""
@@ -434,7 +569,7 @@ class SourceAgent:
         if state["chosen"]:
             return "follow"
         # No link is left to choose, and the excerpts are not enough: only a retry can go on.
-        return "rewrite" if next_step(state, self._limits) == "rewrite" else "abstain"
+        return "rewrite" if next_step(state, self._plain) == "rewrite" else "abstain"
 
     def _follow(self, state: AgentState) -> AgentState:
         """Open the chosen links: each page the site allows is loaded and searched from now on."""
@@ -470,7 +605,7 @@ class SourceAgent:
     def _after_follow(self, state: AgentState) -> Literal["retrieve", "choose", "rewrite", "abstain"]:
         if state["loaded"]:
             return "retrieve"
-        route = next_step(state, self._limits)  # nothing new was loaded: choose again, or retry, or give up
+        route = next_step(state, self._plain)  # nothing new was loaded: choose again, or retry, or give up
         if route == "choose":
             return "choose"
         return "rewrite" if route == "rewrite" else "abstain"
@@ -500,7 +635,7 @@ class SourceAgent:
         return _written(state, answer, "Wrote an answer.")
 
     def _verify(self, state: AgentState) -> AgentState:
-        result = verify_answer(state["answer"], state["documents"])
+        result = verify_answer(state["answer"], state["documents"], question=state["question"])
         if result.valid:
             return {
                 "answer": result.answer,  # with the citations written as [1]
@@ -534,7 +669,7 @@ class SourceAgent:
         reason = state.get("reason") or _grade_reason(state)
         return {
             "abstained": True,
-            "answer": NOT_COVERED_MESSAGE,
+            "answer": state.get("page_problem") or NOT_COVERED_MESSAGE,
             "citations": [],
             "reason": reason,
             "steps": [f"Decided not to answer: {reason}"],
@@ -549,6 +684,27 @@ def _describe_link(link: Link) -> str:
 def _excerpt_key(document: Document) -> str:
     """What identifies an excerpt: its source and its place in the source."""
     return f"{document.metadata.get('url', '')}#{document.metadata.get('chunk_index', '')}"
+
+
+def _after_analyze(state: AgentState) -> Literal["read_pages", "retrieve"]:
+    """A question that names pages of a PDF file reads those pages; any other question searches."""
+    return "read_pages" if state.get("pages") else "retrieve"
+
+
+def _after_read_pages(state: AgentState) -> Literal["grade", "retrieve", "abstain"]:
+    """Grade the pages that were read. When the sources are not PDF files the question is searched as usual."""
+    if not state.get("pages"):
+        return "retrieve"
+    return "grade" if state["documents"] else "abstain"
+
+
+def _page_problem(result: PageRead, named: str) -> str:
+    """What to tell the person when the pages they named have no text: the note of the document, or that it is short.
+
+    It starts with the sentence of every refusal, so that a refusal is recognized as one, and then gives the reason.
+    """
+    base = f"{NOT_COVERED_MESSAGE} This PDF file has no text for {named}."
+    return f"{base} {result.note}".strip() if result.note else f"{base} The document may have fewer pages."
 
 
 def _after_retrieve(state: AgentState) -> Literal["grade", "abstain"]:

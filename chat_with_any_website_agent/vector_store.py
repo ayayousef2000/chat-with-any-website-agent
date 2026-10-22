@@ -15,7 +15,7 @@ from weaviate.classes.aggregate import GroupByAggregate
 from weaviate.classes.config import Configure, DataType, Property, Tokenization
 from weaviate.classes.data import DataObject
 from weaviate.classes.init import AdditionalConfig, Auth, Timeout
-from weaviate.classes.query import Filter, HybridFusion, MetadataQuery
+from weaviate.classes.query import Filter, HybridFusion, MetadataQuery, Sort
 from weaviate.exceptions import UnexpectedStatusCodeError, WeaviateConnectionError, WeaviateTimeoutError
 
 from chat_with_any_website_agent.errors import StoreError
@@ -219,6 +219,18 @@ def _as_datetime(value: Any) -> datetime | None:
 def _as_text(value: Any) -> str | None:
     """Read a text field that may be missing, so that a missing or empty value is ``None``."""
     return value if isinstance(value, str) and value else None
+
+
+def _retrieved_chunk(properties: Any, score: float | None) -> RetrievedChunk:
+    """A chunk from the properties that Weaviate returns for an object."""
+    return RetrievedChunk(
+        url=str(properties["url"]),
+        title=str(properties["title"]),
+        heading=str(properties.get("heading") or ""),
+        text=str(properties["text"]),
+        chunk_index=int(properties["chunk_index"]),
+        score=score,
+    )
 
 
 def _url_filter(url: str) -> Any:
@@ -487,6 +499,60 @@ class WeaviateStore:
             return None
         return _as_text(response.objects[0].properties.get("title"))
 
+    def fetch_section(self, url: str, heading: str, limit: int) -> list[RetrievedChunk]:
+        """Read the chunks of one section of a stored source, in the order of the source.
+
+        The section is found by its heading, which Weaviate matches by its words, so the heading of every chunk that
+        comes back is compared again with the one asked for, and a section with a similar heading is left out.
+
+        Args:
+            url: The address of the source.
+            heading: The heading of the section, for example ``Page 5`` for a page of a PDF file.
+            limit: The most chunks to return.
+
+        Returns:
+            The chunks of the section, first chunk first. Empty when the source has no such section.
+        """
+        section = Filter.all_of([_url_filter(url), Filter.by_property("heading").equal(heading)])
+        response = self._retrier.call(
+            lambda: self._collection.query.fetch_objects(
+                filters=section,
+                limit=limit,
+                sort=Sort.by_property("chunk_index"),
+                return_properties=["url", "title", "heading", "text", "chunk_index"],
+            ),
+            name="Weaviate",
+        )
+        chunks = [_retrieved_chunk(found.properties, None) for found in response.objects]
+        return [chunk for chunk in chunks if chunk.heading == heading]
+
+    def fetch_chunks(self, url: str, indexes: Sequence[int]) -> list[RetrievedChunk]:
+        """Read chunks of a stored source by their place in it, for example the ones next to a chunk.
+
+        Args:
+            url: The address of the source.
+            indexes: The places of the chunks, which start at 0. A place that has no chunk, such as one after the end
+                of the source, is left out of the result.
+
+        Returns:
+            The chunks that exist, first chunk first.
+        """
+        wanted = sorted(set(indexes))
+        if not wanted:
+            return []
+        place = Filter.all_of([_url_filter(url), Filter.by_property("chunk_index").contains_any(wanted)])
+        response = self._retrier.call(
+            lambda: self._collection.query.fetch_objects(
+                filters=place,
+                limit=len(wanted),
+                sort=Sort.by_property("chunk_index"),
+                return_properties=["url", "title", "heading", "text", "chunk_index"],
+            ),
+            name="Weaviate",
+        )
+        chunks = [_retrieved_chunk(found.properties, None) for found in response.objects]
+        return [chunk for chunk in chunks if chunk.url == url and chunk.chunk_index in wanted]
+
     def search(
         self,
         query: str,
@@ -526,17 +592,7 @@ class WeaviateStore:
             ),
             name="Weaviate",
         )
-        return [
-            RetrievedChunk(
-                url=str(found.properties["url"]),
-                title=str(found.properties["title"]),
-                heading=str(found.properties.get("heading") or ""),
-                text=str(found.properties["text"]),
-                chunk_index=int(found.properties["chunk_index"]),
-                score=found.metadata.score,
-            )
-            for found in response.objects
-        ]
+        return [_retrieved_chunk(found.properties, found.metadata.score) for found in response.objects]
 
     def close(self) -> None:
         """Close the connection to Weaviate, if this store owns it."""

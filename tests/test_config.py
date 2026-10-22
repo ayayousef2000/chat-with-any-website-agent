@@ -73,6 +73,7 @@ def test_pdf_support_can_be_switched_off_with_zero(monkeypatch: pytest.MonkeyPat
 def test_default_limits(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = _settings(monkeypatch)
     assert settings.agent_max_steps == 24
+    assert settings.agent_max_expansions == 0  # widening the excerpts is off until it is measured
     assert settings.agent_max_link_hops == 3
     assert settings.agent_max_pages == 5
     assert settings.agent_max_llm_calls == 12

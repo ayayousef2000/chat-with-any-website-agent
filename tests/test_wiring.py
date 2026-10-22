@@ -5,8 +5,10 @@ from typing import TYPE_CHECKING, Any
 
 from chat_with_any_website_agent import wiring
 from chat_with_any_website_agent.config import Settings
+from chat_with_any_website_agent.context import ContextExpander
 from chat_with_any_website_agent.graph import AgentLimits
 from chat_with_any_website_agent.navigation import LinkFollower
+from chat_with_any_website_agent.pages import PageReader
 from chat_with_any_website_agent.retrying import Retrier
 from chat_with_any_website_agent.robots import RobotsChecker
 from chat_with_any_website_agent.usage import UsageCounter
@@ -245,6 +247,77 @@ def test_the_agent_stays_on_its_pages_when_following_links_is_switched_off(monke
     runtime = build_runtime(settings, UsageCounter(), follow_links=False)
 
     assert runtime.agent._links is None
+
+
+def test_the_agent_can_read_the_pages_that_a_question_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings(monkeypatch)
+    _fakes(monkeypatch)
+
+    runtime = build_runtime(settings, UsageCounter())
+
+    reader = runtime.agent._pages
+    assert isinstance(reader, PageReader)
+    assert reader._store is runtime.store  # the pages are read from the same store
+    assert reader._reranker is runtime.cohere[1]  # and the most relevant excerpts are kept with the same reranker
+
+
+def test_the_agent_can_widen_its_excerpts_with_the_chunks_of_the_same_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings(monkeypatch)
+    _fakes(monkeypatch)
+
+    runtime = build_runtime(settings, UsageCounter())
+
+    expander = runtime.agent._context
+    assert isinstance(expander, ContextExpander)
+    assert expander._store is runtime.store
+
+
+def test_widening_the_excerpts_is_off_until_the_setting_asks_for_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings(monkeypatch)
+    _fakes(monkeypatch)
+
+    runtime = build_runtime(settings, UsageCounter())
+
+    assert runtime.agent._limits.max_expansions == 0
+    assert runtime.agent._routing.max_expansions == 0
+
+
+def test_the_setting_switches_widening_the_excerpts_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings(monkeypatch, AGENT_MAX_EXPANSIONS="1", AGENT_MAX_STEPS="26", AGENT_MAX_LLM_CALLS="13")
+    _fakes(monkeypatch)
+
+    runtime = build_runtime(settings, UsageCounter())
+
+    assert runtime.agent._limits.max_expansions == 1
+    assert runtime.agent._routing.max_expansions == 1  # there is an expander, so the routes may use it
+    assert runtime.agent._plain.max_expansions == 0  # the routes after a hop never widen the excerpts
+
+
+def test_widening_with_the_default_limits_is_warned_about_because_it_needs_more_room(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    settings = _settings(monkeypatch, AGENT_MAX_EXPANSIONS="1")  # the limits are still 24 steps and 12 calls
+    _fakes(monkeypatch)
+
+    with caplog.at_level(logging.WARNING, logger=wiring.__name__):
+        build_runtime(settings, UsageCounter())
+
+    messages = [record.getMessage() for record in caplog.records if record.name == wiring.__name__]
+    assert len(messages) == 2
+    assert "can need 26 steps" in messages[0]
+    assert "can need 13 calls" in messages[1]
+
+
+def test_the_agent_that_stays_on_its_pages_can_still_read_the_pages_of_a_pdf_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(monkeypatch)
+    _fakes(monkeypatch)
+
+    runtime = build_runtime(settings, UsageCounter(), follow_links=False)
+
+    assert runtime.agent._links is None
+    assert isinstance(runtime.agent._pages, PageReader)
 
 
 def test_the_runtime_gives_the_parts_that_the_baselines_share_with_the_agent(monkeypatch: pytest.MonkeyPatch) -> None:
