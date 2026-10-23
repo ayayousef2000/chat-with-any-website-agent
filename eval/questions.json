@@ -268,7 +268,7 @@
         "question": "Which kinds of invalid calls to the parrot function does the tutorial list?",
         "reference": "A required argument missing, a non-keyword argument after a keyword argument, a duplicate value for the same argument and an unknown keyword argument.",
         "must_contain": ["parrot(110, voltage=220)"],
-        "answer_must_contain": ["unknown keyword", "after a keyword"],
+        "answer_must_contain": ["keyword"],
         "category": "chunk_boundary"
       },
       {

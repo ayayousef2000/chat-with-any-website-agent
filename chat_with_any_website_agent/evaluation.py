@@ -17,6 +17,7 @@ can be continued the next day.
 """
 
 import json
+import re
 import time
 import unicodedata
 from dataclasses import asdict, dataclass, field
@@ -447,15 +448,28 @@ def _evaluate(system: System, judge: ChatClient, usage: UsageCounter, case: Case
 
 # Markdown marks that the text of a page may have around words: `code`, *emphasis*, _emphasis_ and escapes.
 _FORMATTING = str.maketrans("", "", "`*_\\")
+# The characters that a text may write for a hyphen: the hyphen and the non-breaking hyphen, the dashes and the minus.
+_DASHES = dict.fromkeys(
+    map(
+        ord,
+        "\N{HYPHEN}\N{NON-BREAKING HYPHEN}\N{FIGURE DASH}\N{EN DASH}\N{EM DASH}\N{HORIZONTAL BAR}\N{MINUS SIGN}",
+    ),
+    "-",
+)
+# A space between the groups of thousands of a number ("37 000"), plain or typographic. A group is three digits.
+_GROUP_SPACE = re.compile(r"(?<=\d)[ \N{NO-BREAK SPACE}\N{THIN SPACE}\N{NARROW NO-BREAK SPACE}](?=\d{3}(?!\d))")
 
 
 def _plain(text: str) -> str:
     """Lower-case a text without its Markdown marks, accents and vowel marks, and with its white space made single.
 
     A phrase is compared in this form, so that "café" is found for "cafe" and an Arabic name with its vowel marks is
-    found for the same name without them.
+    found for the same name without them. Every kind of dash is a hyphen, and the space between the groups of "37 000"
+    is dropped, so that an answer with a non-breaking hyphen in "4-layer" or a narrow no-break space in "37 000" still
+    has the phrase "4-layer" or "37000".
     """
-    decomposed = unicodedata.normalize("NFKD", text.translate(_FORMATTING))
+    grouped = _GROUP_SPACE.sub("", text.translate(_FORMATTING))
+    decomposed = unicodedata.normalize("NFKD", grouped).translate(_DASHES)
     without_marks = "".join(character for character in decomposed if unicodedata.category(character) != "Mn")
     return " ".join(without_marks.casefold().split())
 
