@@ -356,6 +356,14 @@ def test_an_expected_phrase_is_found_whatever_the_formatting_of_the_excerpt(exce
         ("It takes 6 layers.", ("6 layers", "8 heads"), False),  # every phrase is needed, not one of them
         ("The source does not cover this question, so there is no answer to give from it.", ("6 layers",), False),
         ("A café", ("cafe",), True),
+        ("A 4\N{NON-BREAKING HYPHEN}layer Transformer", ("4-layer",), True),  # a model's typographic hyphen
+        ("From 5\N{EN DASH}10 and \N{MINUS SIGN}3", ("5-10", "-3"), True),
+        ("About 37\N{NARROW NO-BREAK SPACE}000 tokens", ("37000 tokens",), True),
+        ("About 37\N{NO-BREAK SPACE}000 tokens", ("37000",), True),
+        ("About 37 000 tokens", ("37000",), True),
+        ("About 37000 tokens", ("37 000",), True),  # the phrase may be the one with the space
+        ("About 38 000 tokens", ("37000",), False),
+        ("In 2014 3 papers and 12 345 more", ("2014", "3 papers"), True),  # only a group of three digits is joined
     ],
 )
 def test_the_answer_must_state_every_expected_phrase(answer: str, phrases: tuple[str, ...], found: bool) -> None:
