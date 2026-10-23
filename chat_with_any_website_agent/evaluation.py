@@ -8,6 +8,8 @@ system and judged by a model against a reference answer. Metrics per question:
 - ``faithful``: a judge confirms that every claim in the answer is supported by those excerpts.
 - ``correct``: a judge confirms that the answer agrees with the reference answer. For a question that the sources
   cannot answer, it confirms that the answer says so.
+- ``phrases_found``: the answer contains every phrase that a correct answer must state (no model involved), a check of
+  correctness that does not depend on the judge.
 
 The cost of each question is recorded too (calls to Cohere and Groq, Groq tokens and seconds). A run stops cleanly
 when the call or token limit it was given is reached, and the results are saved after every question, so that a run
@@ -68,6 +70,8 @@ class Case:
         answerable: ``False`` when the sources cannot answer it, so the right answer is that they do not cover it.
         reference: The right answer. Required when the question is answerable.
         must_contain: Phrases of which at least one should be in the excerpts the answer is based on.
+        answer_must_contain: Phrases that a correct answer states, all of them. Short ones, such as a figure or the name
+            of a function, because a right answer may be worded in many ways.
         history: The earlier turns of the conversation, for a follow-up question.
         category: The kind of question, for the summary (for example ``multi_page`` or ``unanswerable``).
         language: The language of the question, for the summary.
@@ -79,6 +83,7 @@ class Case:
     answerable: bool = True
     reference: str | None = None
     must_contain: tuple[str, ...] = ()
+    answer_must_contain: tuple[str, ...] = ()
     history: tuple[Turn, ...] = ()
     category: str = DEFAULT_CATEGORY
     language: str = DEFAULT_LANGUAGE
@@ -181,6 +186,7 @@ class Result:
     agent_draft: str | None = None
     agent_steps: tuple[str, ...] = ()
     agent_excerpts: tuple[str, ...] = ()
+    phrases_found: bool | None = None
 
     @property
     def key(self) -> str:
@@ -210,8 +216,8 @@ def load_cases(path: Path) -> list[Case]:
     """Read a question set and check it.
 
     The file holds a list of pages, each with a ``url`` and its ``questions``. A question has a ``question`` and, when
-    it is answerable, a ``reference``. It may have ``must_contain``, ``history``, ``category``, ``language`` and
-    ``sources``.
+    it is answerable, a ``reference``. It may have ``must_contain``, ``answer_must_contain``, ``history``,
+    ``category``, ``language`` and ``sources``.
 
     Args:
         path: The JSON file.
@@ -289,6 +295,7 @@ def _case(item: Any, url: str, where: str) -> Case:
         answerable=answerable,
         reference=reference if isinstance(reference, str) else None,
         must_contain=_texts(item.get("must_contain"), "must_contain", where),
+        answer_must_contain=_texts(item.get("answer_must_contain"), "answer_must_contain", where),
         history=history,
         category=_text(item.get("category", DEFAULT_CATEGORY), "category", where),
         language=_text(item.get("language", DEFAULT_LANGUAGE), "language", where),
@@ -434,6 +441,7 @@ def _evaluate(system: System, judge: ChatClient, usage: UsageCounter, case: Case
         agent_draft=outcome.draft,
         agent_steps=outcome.steps,
         agent_excerpts=outcome.excerpts,
+        phrases_found=_phrases_found(case, outcome),
     )
 
 
@@ -462,6 +470,18 @@ def _retrieval_hit(case: Case, outcome: Outcome) -> bool | None:
         return None
     text = _plain("\n".join(outcome.excerpts))
     return any(_plain(phrase) in text for phrase in case.must_contain)
+
+
+def _phrases_found(case: Case, outcome: Outcome) -> bool | None:
+    """Whether the answer states every phrase of ``answer_must_contain``; ``None`` when the question lists none.
+
+    The comparison is the one of the retrieval check. An answer that refuses has none of the phrases, so a question
+    that can be answered scores ``False`` when the system wrongly refuses it.
+    """
+    if not case.answerable or not case.answer_must_contain:
+        return None
+    answer = _plain(outcome.answer)
+    return all(_plain(phrase) in answer for phrase in case.answer_must_contain)
 
 
 def run_and_save(

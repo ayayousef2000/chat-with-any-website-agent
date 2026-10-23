@@ -73,12 +73,24 @@ def test_abstention_counts_only_the_questions_the_sources_cannot_answer() -> Non
 def test_a_rate_nobody_could_be_scored_for_is_empty() -> None:
     overall = summarize([_result(retrieval_hit=None, faithful=None, correct=None, answerable=True)])[OVERALL]
 
-    assert (overall.retrieval_hit_rate, overall.faithfulness, overall.correctness, overall.abstention) == (
-        None,
-        None,
-        None,
-        None,
-    )
+    assert (
+        overall.retrieval_hit_rate,
+        overall.faithfulness,
+        overall.correctness,
+        overall.phrase_rate,
+        overall.abstention,
+    ) == (None, None, None, None, None)
+
+
+def test_the_phrase_rate_counts_only_the_questions_that_list_phrases() -> None:
+    results = [
+        _result("a", phrases_found=True),
+        _result("b", phrases_found=False),
+        _result("c", phrases_found=True),
+        _result("d", phrases_found=None),  # no phrases to look for
+    ]
+
+    assert summarize(results)[OVERALL].phrase_rate == pytest.approx(2 / 3)
 
 
 def test_the_cost_is_averaged_over_all_the_questions() -> None:
@@ -93,13 +105,16 @@ def test_the_cost_is_averaged_over_all_the_questions() -> None:
 
 
 def test_the_table_has_a_row_for_each_group_and_marks_what_could_not_be_scored() -> None:
-    results = [_result("a"), _result("b", category="multi_page", correct=None, faithful=None, retrieval_hit=None)]
+    results = [
+        _result("a", phrases_found=True),
+        _result("b", category="multi_page", correct=None, faithful=None, retrieval_hit=None),
+    ]
 
     table = format_summary(summarize(results))
 
     lines = table.splitlines()
-    columns = ["group", "n", "hit", "faithful", "correct", "abstain", "s/q", "groq/q", "tokens/q", "cohere/q"]
-    assert lines[0].split() == columns
-    assert lines[2].split()[:6] == ["all", "2", "100%", "100%", "100%", "-"]
-    assert lines[3].split()[:6] == ["multi_page", "1", "-", "-", "-", "-"]
+    columns = ["group", "n", "hit", "faithful", "correct", "phrases", "abstain"]
+    assert lines[0].split() == [*columns, "s/q", "groq/q", "tokens/q", "cohere/q"]
+    assert lines[2].split()[:7] == ["all", "2", "100%", "100%", "100%", "100%", "-"]
+    assert lines[3].split()[:7] == ["multi_page", "1", "-", "-", "-", "-", "-"]
     assert "1 answer(s) could not be judged" in table
