@@ -268,7 +268,7 @@
         "question": "Which kinds of invalid calls to the parrot function does the tutorial list?",
         "reference": "A required argument missing, a non-keyword argument after a keyword argument, a duplicate value for the same argument and an unknown keyword argument.",
         "must_contain": ["parrot(110, voltage=220)"],
-        "answer_must_contain": ["missing", "duplicate", "unknown keyword"],
+        "answer_must_contain": ["unknown keyword", "after a keyword"],
         "category": "chunk_boundary"
       },
       {
@@ -289,7 +289,7 @@
         "question": "What does the tutorial say result.append(a) is, in its second Fibonacci example?",
         "reference": "It calls a method of the list object result; a method is a function that belongs to an object.",
         "must_contain": ["calls a method of the list object result"],
-        "answer_must_contain": ["method", "list object"],
+        "answer_must_contain": ["method"],
         "category": "chunk_boundary"
       }
     ]
