@@ -1,5 +1,6 @@
 """Tests of the excerpts shown to the model and of the check of its citations."""
 
+import pytest
 from langchain_core.documents import Document
 
 from chat_with_any_website_agent.citations import (
@@ -200,6 +201,45 @@ def test_the_first_number_that_is_not_written_is_the_one_named() -> None:
 def test_a_number_may_be_written_with_or_without_groups_of_thousands() -> None:
     assert verify_answer("The download is 25000 KB large [1].", [RELEASE]).valid
     assert verify_answer("The download is 25,000 KB large [1].", [RELEASE]).valid
+
+
+@pytest.mark.parametrize("separator", ["\N{NO-BREAK SPACE}", "\N{THIN SPACE}", "\N{NARROW NO-BREAK SPACE}"])
+def test_a_number_may_be_grouped_with_the_spaces_of_typography(separator: str) -> None:
+    # A model wrote "37 000 tokens" with a narrow no-break space for an excerpt that says "37000 tokens".
+    plain = Document(
+        page_content="The text has a shared vocabulary of about 37000 tokens.", metadata={"url": "u", "title": "T"}
+    )
+    grouped = Document(
+        page_content=f"The text has a shared vocabulary of about 37{separator}000 tokens.",
+        metadata={"url": "u", "title": "T"},
+    )
+
+    assert verify_answer(f"The text has a shared vocabulary of about 37{separator}000 tokens [1].", [plain]).valid
+    assert verify_answer("The text has a shared vocabulary of about 37000 tokens [1].", [grouped]).valid
+    assert not verify_answer(f"The text has a shared vocabulary of about 38{separator}000 tokens [1].", [plain]).valid
+
+
+def test_a_plain_space_does_not_group_digits() -> None:
+    excerpt = Document(page_content="The text has about 37000 tokens in 2014.", metadata={"url": "u", "title": "T"})
+
+    result = verify_answer("The text has about 37 000 tokens in 2014 [1].", [excerpt])
+
+    assert result.problem == "The answer states 37, which the excerpts it cites do not contain."
+
+
+def test_a_number_that_the_text_of_a_pdf_file_writes_against_a_word_is_written() -> None:
+    # The text of the paper has "dmodel = 1024on the Wall Street Journal": the space after the number was lost.
+    excerpt = Document(
+        page_content="We trained a 4-layer transformer with dmodel = 1024on the Wall Street Journal portion.",
+        metadata={"url": "u", "title": "T", "heading": "Page 9"},
+    )
+    answer = "A 4-layer transformer with dmodel = {} was trained on the Wall Street Journal portion [1]."
+
+    assert verify_answer(answer.format("1024"), [excerpt]).valid
+    for other in ("102", "10", "4096"):  # only the whole run of digits is written
+        assert verify_answer(answer.format(other), [excerpt]).problem == (
+            f"The answer states {other}, which the excerpts it cites do not contain."
+        )
 
 
 def test_digits_of_another_script_are_the_same_number_as_western_digits() -> None:
