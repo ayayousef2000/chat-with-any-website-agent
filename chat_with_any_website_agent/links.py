@@ -164,6 +164,54 @@ _COMMON_WORDS = frozenset(
     }
 )
 _STEM_CHARS = 6
+# The two-letter codes of languages (ISO 639-1). A translated site puts one in the address of each page ("/book/de/v2").
+_LANGUAGE_CODES = frozenset(
+    re.findall(
+        r"[a-z]{2}",
+        "aa ab ae af ak am an ar as av ay az ba be bg bh bi bm bn bo "
+        "br bs ca ce ch co cr cs cu cv cy da de dv dz ee el en eo es "
+        "et eu fa ff fi fj fo fr fy ga gd gl gn gu gv ha he hi ho hr "
+        "ht hu hy hz ia id ie ig ii ik io is it iu ja jv ka kg ki kj "
+        "kk kl km kn ko kr ks ku kv kw ky la lb lg li ln lo lt lu lv "
+        "mg mh mi mk ml mn mr ms mt my na nb nd ne ng nl nn no nr nv "
+        "ny oc oj om or os pa pi pl ps pt qu rm rn ro ru rw sa sc sd "
+        "se sg si sk sl sm sn so sq sr ss st su sv sw ta te tg th ti "
+        "tk tl tn to tr ts tt tw ty ug uk ur uz ve vi vo wa wo xh yi "
+        "yo za zh zu",
+    )
+)
+# A language with a script or a country after it: "zh-hans", "pt-br", "pt_BR".
+_LANGUAGE_TAG = re.compile(r"[a-z]{2}(?:[-_][a-z0-9]{2,4})?")
+
+
+def is_other_language(page_url: str, link_url: str) -> bool:
+    """Whether a link leads to a page in another language than the page it was found on.
+
+    A site that is translated lists the other languages of a page among its links, and a model that is asked what is
+    missing may choose one of them: it holds the same text in a language that the question is not asked in, and its
+    excerpts cannot be checked against an answer in the language of the question. Two addresses are the same place in
+    two languages when they are the same up to a segment where both have a language code, as "/book/en/v2/hooks" and
+    "/book/de/v2/haken" are. Only real language codes count, so "/docs/js/intro" and "/docs/py/intro" are not.
+
+    Args:
+        page_url: The address of the page the link was found on.
+        link_url: The address the link leads to.
+
+    Returns:
+        ``True`` when the first segment that the addresses do not share is a language code in both.
+    """
+    for here, there in zip(_segments(page_url), _segments(link_url), strict=False):
+        if here != there:
+            return _is_language(here) and _is_language(there)
+    return False
+
+
+def _segments(url: str) -> list[str]:
+    return urlsplit(url).path.lower().strip("/").split("/")
+
+
+def _is_language(segment: str) -> bool:
+    return _LANGUAGE_TAG.fullmatch(segment) is not None and segment[:2] in _LANGUAGE_CODES
 
 
 def shortlist_links(links: Sequence[Link], topic: str, limit: int, near: Sequence[str] = ()) -> tuple[Link, ...]:
