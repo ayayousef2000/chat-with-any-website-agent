@@ -40,7 +40,7 @@ from langgraph.errors import GraphRecursionError
 from langgraph.graph import END, START, StateGraph
 
 from chat_with_any_website_agent.citations import Citation, format_excerpts, verify_answer
-from chat_with_any_website_agent.links import shortlist_links
+from chat_with_any_website_agent.links import is_other_language, shortlist_links
 from chat_with_any_website_agent.pages import describe_pages, pages_in_question
 from chat_with_any_website_agent.prompts import (
     ANSWER_PROMPT,
@@ -460,14 +460,17 @@ class SourceAgent:
         }
 
     def _frontier(self, pages: Sequence[str] | None, tried: Sequence[str]) -> list[Link]:
-        """The links of the pages that were not opened yet, in the order of the pages, each address once."""
+        """The links of the pages that were not opened yet, in the order of the pages, each address once.
+
+        The links to the same page in another language are left out.
+        """
         if self._links is None or pages is None or self._limits.hops == 0:
             return []
         skip = {*pages, *tried}
         found: dict[str, Link] = {}
         for page in pages:
             for link in self._links.links_of(page):
-                if link.url not in skip and link.url not in found:
+                if link.url not in skip and link.url not in found and not is_other_language(page, link.url):
                     found[link.url] = link
         return list(found.values())
 

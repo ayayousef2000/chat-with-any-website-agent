@@ -423,6 +423,40 @@ def test_the_links_in_the_same_part_of_the_site_as_the_given_page_are_listed_fir
     assert setup.links.opened == [chapter.url]  # number 1 is the link near the page that was given
 
 
+def test_the_same_page_in_another_language_is_not_offered_as_a_link() -> None:
+    hooks = "https://docs.example/book/en/v2/hooks"
+    tags = Link("https://docs.example/book/en/v2/tags", "Tagging")
+    german = Link("https://docs.example/book/de/v2/haken", "Deutsch")
+    korean = Link("https://docs.example/book/ko/v2/hooks", "한국어")
+    setup = _setup(
+        [NOT_ENOUGH, choose(1), NOT_ENOUGH],
+        links={hooks: (german, tags, korean)},
+        pages={hooks: [CONTENTS], tags.url: [PASS_TEXT]},
+        limits=AgentLimits(24, 12, 0, 1, 5),
+    )
+
+    setup.agent.ask(QUESTION, [hooks])
+
+    shown = setup.grader.requests[1][0][-1]["content"].split("Links:\n")[1].splitlines()
+    assert shown == ["1. Tagging - /book/en/v2/tags"]
+    assert setup.links.opened == [tags.url]
+
+
+def test_a_page_with_only_translations_to_follow_has_no_link_to_choose() -> None:
+    hooks = "https://docs.example/book/en/v2/hooks"
+    setup = _setup(
+        [NOT_ENOUGH, NOT_ENOUGH],
+        links={hooks: (Link("https://docs.example/book/de/v2/haken", "Deutsch"),)},
+        pages={hooks: [CONTENTS]},
+        limits=AgentLimits(24, 12, 0, 1, 5),
+    )
+
+    result = setup.agent.ask(QUESTION, [hooks])
+
+    assert result.abstained
+    assert setup.links.opened == []
+
+
 def test_a_page_that_was_followed_does_not_move_the_part_that_is_preferred() -> None:
     index = "https://docs.example/3/tutorial/index.html"
     library = Link("https://docs.example/3/library/os.html", "os")

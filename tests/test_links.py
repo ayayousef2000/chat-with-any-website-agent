@@ -7,6 +7,7 @@ from chat_with_any_website_agent.links import (
     MAX_TEXT_CHARS,
     Link,
     collect_links,
+    is_other_language,
     links_from_json,
     links_to_json,
     shortlist_links,
@@ -324,3 +325,41 @@ def test_no_pages_near_change_nothing() -> None:
 
     assert shortlist_links(links, "", limit=5) == links
     assert shortlist_links(links, "", limit=5, near=[]) == links
+
+
+# --- the same page in another language ---
+
+BOOK = "https://git-scm.com/book/en/v2/Customizing-Git-Git-Hooks"
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        "https://git-scm.com/book/de/v2/Git-einrichten-Git-Hooks",  # a translation of the page, with a translated name
+        "https://git-scm.com/book/ko/v2/Git%eb%a7%9e%ec%b6%a4-Git-Hooks",
+        "https://git-scm.com/book/pt-br/v2/Git-Hooks",  # a language with a country
+        "https://git-scm.com/book/ZH-HANS/v2/Hooks",  # capitals make no difference
+        "https://git-scm.com/book/az",  # the start of another language
+    ],
+)
+def test_a_link_to_the_same_place_in_another_language_is_found(link: str) -> None:
+    assert is_other_language(BOOK, link)
+
+
+@pytest.mark.parametrize(
+    ("page", "link"),
+    [
+        (BOOK, "https://git-scm.com/book/en/v2/Git-Basics-Tagging"),  # another page of the same language
+        (BOOK, BOOK),
+        (BOOK, "https://git-scm.com/book/en"),  # one address is the start of the other
+        (BOOK, "https://git-scm.com/about"),
+        ("https://docs.example/3/tutorial/index.html", "https://docs.example/3/library/index.html"),
+        ("https://docs.example/docs/js/intro", "https://docs.example/docs/py/intro"),  # not languages: js and py
+        ("https://docs.example/docs/go/intro", "https://docs.example/docs/rs/intro"),
+        ("https://docs.example/en/stable/intro/", "https://docs.example/en/6.1/faq/"),  # first difference: not a code
+        ("https://docs.example/book/en/v2", "https://docs.example/book/v2/en"),  # the code is not in the same place
+        ("https://docs.example/", "https://docs.example/de/"),  # a page at the top of the site has no language
+    ],
+)
+def test_a_link_to_another_place_is_not_a_link_to_another_language(page: str, link: str) -> None:
+    assert not is_other_language(page, link)
