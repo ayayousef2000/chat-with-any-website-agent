@@ -201,5 +201,213 @@
         "language": "ar"
       }
     ]
+  },
+  {
+    "url": "https://docs.python.org/3/tutorial/datastructures.html",
+    "questions": [
+      {
+        "question": "Which methods do list objects have, according to the tutorial? Name all of them.",
+        "reference": "The tutorial lists list.append, list.extend, list.insert, list.remove, list.pop, list.clear, list.index, list.count, list.sort, list.reverse and list.copy.",
+        "must_contain": ["list.copy()"],
+        "answer_must_contain": ["append", "extend", "insert", "remove", "pop", "clear", "index", "count", "sort", "reverse", "copy"],
+        "category": "chunk_boundary"
+      },
+      {
+        "question": "In the tutorial's example of looping over a sequence in reverse, which range is reversed?",
+        "reference": "The example loops over reversed(range(1, 10, 2)).",
+        "must_contain": ["reversed(range(1, 10, 2))"],
+        "answer_must_contain": ["1, 10, 2"],
+        "category": "chunk_boundary"
+      }
+    ]
+  },
+  {
+    "url": "https://docs.python.org/3/tutorial/errors.html",
+    "questions": [
+      {
+        "question": "Which error messages does the tutorial show as examples of exceptions that a program does not handle?",
+        "reference": "ZeroDivisionError (division by zero) for 10 * (1/0), NameError for 4 + spam*3 and TypeError for '2' + 2.",
+        "must_contain": ["ZeroDivisionError: division by zero"],
+        "answer_must_contain": ["ZeroDivisionError", "NameError", "TypeError"],
+        "category": "chunk_boundary"
+      },
+      {
+        "question": "How does the tutorial write the optional clause of the raise statement that shows an exception is a direct consequence of another?",
+        "reference": "With a from clause: raise RuntimeError from exc.",
+        "must_contain": ["raise RuntimeError from exc"],
+        "answer_must_contain": ["from exc"],
+        "category": "chunk_boundary"
+      },
+      {
+        "question": "How does the tutorial show the with statement making sure that a file is cleaned up?",
+        "reference": "With 'with open(\"myfile.txt\") as f:' and a loop over its lines; after the statement the file f is always closed, even if a problem occurred.",
+        "must_contain": ["with open(\"myfile.txt\") as f:"],
+        "answer_must_contain": ["with open", "closed"],
+        "category": "chunk_boundary"
+      },
+      {
+        "question": "In the tutorial's example of adding notes to the exceptions collected in an exception group, what note does each exception get?",
+        "reference": "Each exception gets the note 'Happened in Iteration' followed by the number of the iteration.",
+        "must_contain": ["Happened in Iteration"],
+        "answer_must_contain": ["Happened in Iteration"],
+        "category": "chunk_boundary"
+      }
+    ]
+  },
+  {
+    "url": "https://docs.python.org/3/tutorial/controlflow.html",
+    "questions": [
+      {
+        "question": "In the tutorial's example of changing a collection while looping over it, which users are in the sample collection and which status gets a user removed?",
+        "reference": "The sample collection has Hans (active), Éléonore (inactive) and 景太郎 (active); a user whose status is inactive is deleted.",
+        "must_contain": ["Strategy: Iterate over a copy"],
+        "answer_must_contain": ["Hans", "inactive"],
+        "category": "chunk_boundary"
+      },
+      {
+        "question": "Which kinds of invalid calls to the parrot function does the tutorial list?",
+        "reference": "A required argument missing, a non-keyword argument after a keyword argument, a duplicate value for the same argument and an unknown keyword argument.",
+        "must_contain": ["parrot(110, voltage=220)"],
+        "answer_must_contain": ["missing", "duplicate", "unknown keyword"],
+        "category": "chunk_boundary"
+      },
+      {
+        "question": "If the tutorial's Point class sets __match_args__ to (\"x\", \"y\"), which patterns does it list as equivalent?",
+        "reference": "Point(1, var), Point(1, y=var), Point(x=1, y=var) and Point(y=var, x=1).",
+        "must_contain": ["Point(y=var, x=1)"],
+        "answer_must_contain": ["y=var, x=1"],
+        "category": "chunk_boundary"
+      },
+      {
+        "question": "What does the tutorial's example of a function that returns a lambda adding a fixed number give when the returned function is called with 0 and with 1?",
+        "reference": "With the number 42 it returns 42 for f(0) and 43 for f(1).",
+        "must_contain": ["make_incrementor(42)"],
+        "answer_must_contain": ["42", "43"],
+        "category": "chunk_boundary"
+      },
+      {
+        "question": "What does the tutorial say result.append(a) is, in its second Fibonacci example?",
+        "reference": "It calls a method of the list object result; a method is a function that belongs to an object.",
+        "must_contain": ["calls a method of the list object result"],
+        "answer_must_contain": ["method", "list object"],
+        "category": "chunk_boundary"
+      }
+    ]
+  },
+  {
+    "url": "https://docs.python.org/3/tutorial/classes.html",
+    "questions": [
+      {
+        "question": "In the tutorial's example of stepping through the string 'abc' by hand with iter() and next(), how is the iterator object shown?",
+        "reference": "It is shown as <str_iterator object at 0x10c90e650>, an object of type str_iterator.",
+        "must_contain": ["str_iterator object"],
+        "answer_must_contain": ["str_iterator"],
+        "category": "chunk_boundary"
+      }
+    ]
+  },
+  {
+    "url": "https://arxiv.org/pdf/1706.03762",
+    "questions": [
+      {
+        "question": "What are the illegal connections set to when the decoder's self-attention is masked, and what is the dimensionality of the inner layer of the feed-forward network?",
+        "reference": "The values for illegal connections are set to −∞ before the softmax, and the inner layer has dimensionality dff = 2048.",
+        "must_contain": ["inner-layer has dimensionality"],
+        "answer_must_contain": ["∞", "2048"],
+        "category": "chunk_boundary"
+      },
+      {
+        "question": "How large is the English-German training data in the paper, and how large is its shared vocabulary?",
+        "reference": "About 4.5 million sentence pairs, with a shared source-target vocabulary of about 37000 tokens (byte-pair encoding).",
+        "must_contain": ["37000 tokens"],
+        "answer_must_contain": ["4.5 million", "37000"],
+        "category": "chunk_boundary"
+      },
+      {
+        "question": "What BLEU score does the big model reach on English-to-French translation, and how many checkpoints were averaged for the base models?",
+        "reference": "The big model reaches a BLEU score of 41.0, and for the base models the last 5 checkpoints were averaged.",
+        "must_contain": ["last 5 checkpoints"],
+        "answer_must_contain": ["41.0", "5 checkpoints"],
+        "category": "chunk_boundary"
+      },
+      {
+        "question": "What size of Transformer did the paper train for English constituency parsing?",
+        "reference": "A 4-layer transformer with dmodel = 1024, trained on the Wall Street Journal (WSJ) portion of the Penn Treebank.",
+        "must_contain": ["4-layer transformer"],
+        "answer_must_contain": ["4-layer", "1024"],
+        "category": "chunk_boundary"
+      }
+    ]
+  },
+  {
+    "url": "https://git-scm.com/book/en/v2",
+    "questions": [
+      {
+        "question": "What two kinds of tags does Git support?",
+        "reference": "Lightweight and annotated tags.",
+        "must_contain": ["lightweight and annotated"],
+        "answer_must_contain": ["lightweight", "annotated"],
+        "category": "multi_page_large"
+      },
+      {
+        "question": "Which three trees does git reset manage, according to the book?",
+        "reference": "HEAD, the Index and the Working Directory.",
+        "must_contain": ["Working Directory"],
+        "answer_must_contain": ["HEAD", "Index", "Working Directory"],
+        "category": "multi_page_large"
+      },
+      {
+        "question": "Where does Git keep its hooks, and what do the sample hooks end with?",
+        "reference": "In the hooks subdirectory of the Git directory (.git/hooks); the sample hooks end with .sample.",
+        "must_contain": [".sample"],
+        "answer_must_contain": [".git/hooks", ".sample"],
+        "category": "multi_page_large"
+      },
+      {
+        "question": "How long does the cache credential helper keep credentials in memory?",
+        "reference": "The credentials are purged from the cache after 15 minutes.",
+        "must_contain": ["15 minutes"],
+        "answer_must_contain": ["15 minutes"],
+        "category": "multi_page_large"
+      },
+      {
+        "question": "What does the name of the git rerere command stand for?",
+        "reference": "Reuse recorded resolution.",
+        "must_contain": ["reuse recorded resolution"],
+        "answer_must_contain": ["reuse recorded resolution"],
+        "category": "multi_page_large"
+      },
+      {
+        "question": "How many distinct protocols can Git use to transfer data, and which are they?",
+        "reference": "Four: Local, HTTP, SSH and Git.",
+        "must_contain": ["four distinct protocols"],
+        "answer_must_contain": ["four", "Local", "HTTP", "SSH"],
+        "category": "multi_page_large"
+      },
+      {
+        "question": "What rule of thumb does the book give about rebasing?",
+        "reference": "Do not rebase commits that exist outside your repository and that people may have based work on.",
+        "must_contain": ["outside your repository"],
+        "answer_must_contain": ["outside your repository"],
+        "category": "multi_page_large"
+      },
+      {
+        "question": "How do you make git co an alias for git checkout?",
+        "reference": "With git config --global alias.co checkout.",
+        "must_contain": ["alias.co checkout"],
+        "answer_must_contain": ["alias.co checkout"],
+        "category": "multi_page_large"
+      },
+      {
+        "question": "How much does a GitLab Enterprise licence cost per user per month?",
+        "answerable": false,
+        "category": "unanswerable_large"
+      },
+      {
+        "question": "What is the minimum monthly price of GitHub's paid plans?",
+        "answerable": false,
+        "category": "unanswerable_large"
+      }
+    ]
   }
 ]
