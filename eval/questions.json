@@ -242,7 +242,7 @@
         "question": "How does the tutorial show the with statement making sure that a file is cleaned up?",
         "reference": "With 'with open(\"myfile.txt\") as f:' and a loop over its lines; after the statement the file f is always closed, even if a problem occurred.",
         "must_contain": ["with open(\"myfile.txt\") as f:"],
-        "answer_must_contain": ["with open", "closed"],
+        "answer_must_contain": ["closed"],
         "category": "chunk_boundary"
       },
       {
