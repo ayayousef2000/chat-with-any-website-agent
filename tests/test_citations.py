@@ -5,13 +5,16 @@ from langchain_core.documents import Document
 
 from chat_with_any_website_agent.citations import (
     ELLIPSIS,
+    EXCERPT_CHARS,
     NO_CITATION_PROBLEM,
     Citation,
     format_excerpts,
     normalize_citations,
     verify_answer,
 )
+from chat_with_any_website_agent.ingest import DEFAULT_CHUNK_SIZE
 
+SENTENCE = " Their file names all end with `.sample`."
 PASS_TEXT = (
     "The pass statement does nothing. "
     "It is used when a statement is required syntactically but the program requires no action."
@@ -56,6 +59,18 @@ def test_a_long_excerpt_is_cut_and_ends_with_an_ellipsis() -> None:
     document = Document(page_content="a" * 20, metadata={"title": "t"})
 
     assert format_excerpts([document], max_chars=10) == f"[1] t\n{'a' * 10}{ELLIPSIS}"
+
+
+def test_a_whole_chunk_is_shown_to_the_model() -> None:
+    # The last sentence of a chunk of 2,000 characters was once cut off, and the model never read it.
+    text = "x" * (DEFAULT_CHUNK_SIZE - len(SENTENCE)) + SENTENCE
+    document = Document(page_content=text, metadata={"title": "t"})
+
+    shown = format_excerpts([document])
+
+    assert shown.endswith(SENTENCE)
+    assert ELLIPSIS not in shown
+    assert EXCERPT_CHARS >= DEFAULT_CHUNK_SIZE
 
 
 def test_no_excerpts_make_an_empty_text() -> None:
