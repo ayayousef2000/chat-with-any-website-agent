@@ -409,5 +409,31 @@
         "category": "unanswerable_large"
       }
     ]
+  },
+  {
+    "url": "https://docs.python.org/3/tutorial/controlflow.html",
+    "questions": [
+      {
+        "question": "What does the pass statement do, and how many parallel attention heads does the Transformer model use?",
+        "reference": "The pass statement does nothing. The Transformer model uses h = 8 parallel attention layers, or heads.",
+        "must_contain": ["The pass statement does nothing", "h = 8"],
+        "answer_must_contain": ["nothing", "eight"],
+        "sources": ["https://arxiv.org/pdf/1706.03762"],
+        "category": "multi_source_mixed"
+      }
+    ]
+  },
+  {
+    "url": "https://arxiv.org/pdf/1706.03762",
+    "questions": [
+      {
+        "question": "Which optimizer was used to train the Transformer, and what is a set in Python?",
+        "reference": "The Transformer was trained with the Adam optimizer. A set is an unordered collection with no duplicate elements.",
+        "must_contain": ["Adam optimizer", "A set is an unordered collection with no duplicate elements"],
+        "answer_must_contain": ["Adam", "unordered"],
+        "sources": ["https://docs.python.org/3/tutorial/datastructures.html"],
+        "category": "multi_source_mixed"
+      }
+    ]
   }
 ]

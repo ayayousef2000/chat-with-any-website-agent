@@ -26,6 +26,11 @@ if TYPE_CHECKING:
 DEFAULT_CANDIDATES = 20
 DEFAULT_TOP_N = 5
 DEFAULT_ALPHA = 0.5
+# When a question gives several sources, each of them keeps at least this many of the excerpts (see ``guaranteed``),
+# and the search for each source asks for at least this many candidates.
+DEFAULT_FLOOR = 2
+MIN_GUARANTEED = 2
+MIN_GROUP_CANDIDATES = 5
 
 
 class ChunkSearch(Protocol):
@@ -65,9 +70,17 @@ class SourceRetriever(BaseRetriever):
     Every document holds the text of one chunk. Its metadata has the ``url`` and ``title`` of the source, the
     ``heading`` of its section, its ``chunk_index``, the ``search_score`` of the search and the ``rerank_score``
     (``None`` when there was nothing to reorder).
+
+    One search over several sources lets the source with the most matching chunks crowd out the others: a long PDF file
+    can fill all the excerpts and leave none from a short page that the question also asks about. So when two or more
+    sources are ``guaranteed``, each is searched on its own, the candidates are reranked together, and each of those
+    sources keeps its best ``floor`` excerpts (fewer when there are not so many places) before the rest are filled with
+    the best of all.
     """
 
     urls: list[str] | None = None
+    guaranteed: list[str] = Field(default_factory=list)
+    floor: int = Field(default=DEFAULT_FLOOR, ge=1)
     candidates: int = Field(default=DEFAULT_CANDIDATES, ge=1)
     top_n: int = Field(default=DEFAULT_TOP_N, ge=1)
     alpha: float = Field(default=DEFAULT_ALPHA, ge=0.0, le=1.0)
@@ -83,6 +96,8 @@ class SourceRetriever(BaseRetriever):
         reranker: Reranker,
         *,
         urls: list[str] | None = None,
+        guaranteed: list[str] | None = None,
+        floor: int = DEFAULT_FLOOR,
         candidates: int = DEFAULT_CANDIDATES,
         top_n: int = DEFAULT_TOP_N,
         alpha: float = DEFAULT_ALPHA,
@@ -95,6 +110,9 @@ class SourceRetriever(BaseRetriever):
             embedder: Turns the question into a vector, for example a ``CohereEmbedder``.
             reranker: Reorders the candidates, for example a ``CohereReranker``.
             urls: The sources to search in. ``None`` searches all of them, and an empty list finds nothing.
+            guaranteed: The sources that must each keep ``floor`` of the excerpts, for example the pages that a question
+                gives. It takes effect only when two or more of them are among ``urls``.
+            floor: How many excerpts each guaranteed source keeps at least.
             candidates: How many chunks the search returns for the reranker to choose from.
             top_n: How many excerpts to return.
             alpha: The blend of the two searches; 1 is the vector search only and 0 the keyword search only.
@@ -103,7 +121,14 @@ class SourceRetriever(BaseRetriever):
         Raises:
             pydantic.ValidationError: If a number is out of range.
         """
-        settings: dict[str, Any] = {"urls": urls, "candidates": candidates, "top_n": top_n, "alpha": alpha}
+        settings: dict[str, Any] = {
+            "urls": urls,
+            "guaranteed": guaranteed or [],
+            "floor": floor,
+            "candidates": candidates,
+            "top_n": top_n,
+            "alpha": alpha,
+        }
         super().__init__(**settings, **kwargs)  # as a dict, because mypy only knows the fields of the base class
         self._store = store
         self._embedder = embedder
@@ -118,13 +143,70 @@ class SourceRetriever(BaseRetriever):
         """
         if self.urls is not None and not self.urls:
             return []
-        chunks = self._store.search(query, self._embedder.embed_query(query), self.candidates, self.alpha, self.urls)
+        vector = self._embedder.embed_query(query)
+        groups = self._groups()
+        if groups:
+            each = max(MIN_GROUP_CANDIDATES, self.candidates // len(groups))
+            chunks = [chunk for group in groups for chunk in self._store.search(query, vector, each, self.alpha, group)]
+        else:
+            chunks = self._store.search(query, vector, self.candidates, self.alpha, self.urls)
         if not chunks:
             return []
-        ranked = self._reranker.rerank(
-            query, [contextualize(chunk.title, chunk.heading, chunk.text) for chunk in chunks], self.top_n
-        )
-        return [document_from_chunk(chunks[item.index], item.score) for item in ranked]
+        texts = [contextualize(chunk.title, chunk.heading, chunk.text) for chunk in chunks]
+        if not groups:
+            ranked = self._reranker.rerank(query, texts, self.top_n)
+            return [document_from_chunk(chunks[item.index], item.score) for item in ranked]
+        everything = self._reranker.rerank(query, texts, len(texts))
+        kept = _keep_floor(everything, [chunk.url for chunk in chunks], self._guaranteed_urls(), self.floor, self.top_n)
+        return [document_from_chunk(chunks[item.index], item.score) for item in kept]
+
+    def _guaranteed_urls(self) -> list[str]:
+        """The guaranteed sources that are searched, each once; fewer than two means that nothing is guaranteed."""
+        wanted = dict.fromkeys(self.guaranteed)
+        urls = [url for url in wanted if self.urls is not None and url in self.urls]
+        return urls if len(urls) >= MIN_GUARANTEED else []
+
+    def _groups(self) -> list[list[str]]:
+        """What to search on its own: each guaranteed source, then all the other sources together.
+
+        Empty when nothing is guaranteed, and then one search covers all the sources.
+        """
+        guaranteed = self._guaranteed_urls()
+        if not guaranteed or self.urls is None:
+            return []
+        groups = [[url] for url in guaranteed]
+        others = [url for url in self.urls if url not in guaranteed]
+        return [*groups, others] if others else groups
+
+
+def _keep_floor(
+    ranked: Sequence[RankedDocument], urls: Sequence[str], guaranteed: Sequence[str], floor: int, top_n: int
+) -> list[RankedDocument]:
+    """Choose ``top_n`` of the ranked chunks so that each guaranteed source keeps its best ``floor``.
+
+    Args:
+        ranked: Every candidate, best first.
+        urls: The source of each candidate, by the index in the candidates.
+        guaranteed: The sources that keep a floor.
+        floor: How many each of them keeps at least. It is lowered to what fits: ``top_n`` shared by the sources.
+        top_n: How many to keep.
+
+    Returns:
+        The kept chunks, best first.
+    """
+    room = min(floor, top_n // len(guaranteed))
+    count = dict.fromkeys(guaranteed, 0)
+    chosen: set[int] = set()
+    for item in ranked:
+        url = urls[item.index]
+        if url in count and count[url] < room:
+            count[url] += 1
+            chosen.add(item.index)
+    for item in ranked:
+        if len(chosen) >= top_n:
+            break
+        chosen.add(item.index)
+    return [item for item in ranked if item.index in chosen]
 
 
 def document_from_chunk(chunk: RetrievedChunk, rerank_score: float | None) -> Document:

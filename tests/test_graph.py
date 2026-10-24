@@ -184,6 +184,24 @@ def test_the_question_is_tidied_and_every_source_is_searched_when_none_are_given
     assert setup.store.searches == [(QUESTION, None)]
 
 
+def test_each_source_that_the_question_gives_is_searched_on_its_own() -> None:
+    other = "https://docs.example/other"
+    setup = _setup([ENOUGH], [CITED_ANSWER])
+
+    result = setup.agent.ask(QUESTION, [URL, other])
+
+    assert not result.abstained
+    assert setup.store.searches == [(QUESTION, [URL]), (QUESTION, [other])]
+
+
+def test_a_single_given_source_is_searched_once_with_all_its_pages() -> None:
+    setup = _setup([ENOUGH], [CITED_ANSWER])
+
+    setup.agent.ask(QUESTION, [URL])
+
+    assert setup.store.searches == [(QUESTION, [URL])]
+
+
 def test_a_blank_question_is_refused() -> None:
     setup = _setup([])
 

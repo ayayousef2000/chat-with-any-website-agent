@@ -1,18 +1,20 @@
 # Chat With Any Website Agent
 
+[![CI](https://github.com/ayayousef2000/chat-with-any-website-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/ayayousef2000/chat-with-any-website-agent/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/ayayousef2000/chat-with-any-website-agent/actions/workflows/codeql.yml/badge.svg)](https://github.com/ayayousef2000/chat-with-any-website-agent/actions/workflows/codeql.yml)
+[![License: MIT](https://img.shields.io/github/license/ayayousef2000/chat-with-any-website-agent)](LICENSE)
+[![Python 3.14+](https://img.shields.io/badge/python-3.14%2B-blue)](https://www.python.org/)
+
 An agentic RAG workflow built with [LangGraph](https://langchain-ai.github.io/langgraph/) and LangChain. It answers questions about a web page or a PDF file with cited sources. It grades what it finds, follows links to other pages of the same site when the evidence is not enough, checks its own citations, and says that the source does not cover the question instead of inventing an answer.
+
+**Live demo:** https://chat-with-any-website-agent.onrender.com
 
 This is the agent version of [Chat With Any Website](https://github.com/ayayousef2000/chat-with-any-website), which answers questions about one page or PDF with a fixed pipeline. It is a separate project with its own repository, keys and vector database.
 
 ## How it works
 
 ```
-question → analyze → retrieve → grade ─ enough ─→ generate → verify ─ citations hold ─→ answer
-                        ↑          │                  │          │
-                        │          │                  │          └─ citations do not hold ─→ repair (once) ─→ verify
-                        └ rewrite ─┘ not enough       └─ no answer in the excerpts ─┐
-                                     and a retry fits                               ↓
-                                     otherwise ───────────────────────────────→ abstain
+question → analyze → retrieve → grade → generate → verify → answer
 ```
 
 - **Retrieve.** A hybrid search (keywords and vectors) in Weaviate, then a Cohere rerank keeps the best few excerpts.
@@ -26,20 +28,20 @@ Every question runs within hard limits on steps, model calls, rewrites and pages
 
 ## Results
 
-The agent was evaluated on 55 questions over public sources: pages of the Python tutorial, the paper "Attention Is All You Need" (PDF), the Pro Git book and an Arabic Wikipedia article. A separate model judges each answer against a reference answer and the excerpts the agent used. The set is small, so treat the numbers as a first measurement and not as a benchmark.
+The agent was evaluated on 57 questions over public sources: pages of the Python tutorial, the paper "Attention Is All You Need" (PDF), the Pro Git book and an Arabic Wikipedia article. A separate model judges each answer against a reference answer and the excerpts the agent used. The set is small, so treat the numbers as a first measurement and not as a benchmark.
 
 | Category | Questions | Correct |
 |---|---|---|
 | Single page | 4 | 3 |
-| Two sources given | 4 | 4 |
+| Two sources given (two pages, or a PDF file and a page) | 6 | 6 |
 | PDF, facts from a given page | 6 | 6 |
 | Arabic | 2 | 2 |
 | Text that the chunker cuts apart (an example or a list across two chunks) | 16 | 16 |
 | Unanswerable (the right answer is that the source does not cover it) | 9 | 8 |
 | Multi-page (the answer is on a page linked from the start page; 6 on the Python tutorial, 8 on the Pro Git book with 148 links on its index page) | 14 | 14 |
-| **All** | 55 | **53 (96%)** |
+| **All** | 57 | **55 (96%)** |
 
-- Both misses were marked wrong by the judge model although the answers are right: the judge was too strict. Read by hand, all 55 are right.
+- Both misses were marked wrong by the judge model although the answers are right: the judge was too strict. Read by hand, all 57 are right.
 - Without link following, the same agent answers none of the multi-page questions.
 - A question costs about 4,600 Groq tokens on average, not counting the judge.
 - Known limit: the citation check compares words and numbers, so an answer can still add a detail that the source does not state.

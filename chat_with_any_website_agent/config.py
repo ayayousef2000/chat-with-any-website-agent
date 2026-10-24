@@ -77,6 +77,9 @@ class Settings(BaseSettings):
     # How many times the excerpts are widened with the text next to the best ones when they are not enough. It is off
     # (0) until it has been measured; each expansion needs 2 more steps and 1 more call than the limits above allow.
     agent_max_expansions: int = Field(default=0, ge=0)
+    # A file that gets one JSON line for every question: the question, the steps taken and whether the agent answered.
+    # It stays on this machine and is off while blank.
+    agent_trace_file: str = ""
 
     # Limits for one evaluation run
     eval_max_cohere_calls: int = Field(default=300, gt=0)

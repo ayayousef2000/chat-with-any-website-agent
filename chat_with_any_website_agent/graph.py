@@ -57,6 +57,7 @@ from chat_with_any_website_agent.prompts import (
     is_not_covered,
 )
 from chat_with_any_website_agent.state import AgentState, new_state
+from chat_with_any_website_agent.trace import append_trace
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -306,6 +307,7 @@ class SourceAgent:
         *,
         pages: PageSource | None = None,
         context: ContextSource | None = None,
+        trace_file: str = "",
     ) -> None:
         """Create the agent.
 
@@ -320,7 +322,9 @@ class SourceAgent:
                 only part of the question.
             context: Finds the text next to the best excerpts. Without it the excerpts are never widened, whatever
                 ``max_expansions`` says.
+            trace_file: A file that gets one JSON line for every question (see ``trace``). Blank switches it off.
         """
+        self._trace_file = trace_file
         self._retriever = retriever
         self._limits = limits
         self._links = links
@@ -363,8 +367,11 @@ class SourceAgent:
             final = self._graph.invoke(state, config=config)
         except GraphRecursionError:
             logger.warning("The agent stopped at the recursion limit of the graph")
-            return AgentAnswer(answer=NOT_COVERED_MESSAGE, abstained=True, reason=STEP_LIMIT_REASON)
-        return _answer(final)
+            answer = AgentAnswer(answer=NOT_COVERED_MESSAGE, abstained=True, reason=STEP_LIMIT_REASON)
+        else:
+            answer = _answer(final)
+        append_trace(self._trace_file, question.strip(), answer)
+        return answer
 
     def _build(self) -> Any:
         graph = StateGraph(AgentState)
@@ -475,7 +482,9 @@ class SourceAgent:
         return list(found.values())
 
     def _retrieve(self, state: AgentState) -> AgentState:
-        retriever = self._retriever.model_copy(update={"urls": state["urls"]})
+        # The pages the question gives each keep their best excerpts; the pages that were opened by a link only compete.
+        given = [url for url in state["urls"] or [] if url not in state["followed"]]
+        retriever = self._retriever.model_copy(update={"urls": state["urls"], "guaranteed": given})
         documents = retriever.invoke(state["query"])
         seen = state.get("seen", [])
         fresh = [key for key in dict.fromkeys(_excerpt_key(document) for document in documents) if key not in seen]
