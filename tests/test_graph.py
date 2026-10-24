@@ -606,3 +606,71 @@ def test_a_failure_of_a_service_reaches_the_caller() -> None:
 
     with pytest.raises(ServiceBusyError, match="busy"):
         setup.agent.ask(QUESTION)
+
+
+# --- the answer is written from the excerpts that the grade named ---
+
+
+def _enough_from(*numbers: int) -> str:
+    """The reply of a grader that finds the excerpts enough and names the ones the answer needs."""
+    return '{"sufficient": true, "reason": "stated", "useful": [' + ", ".join(str(number) for number in numbers) + "]}"
+
+
+def test_the_answer_is_written_and_checked_from_the_excerpts_that_the_grade_named() -> None:
+    setup = _setup([_enough_from(2)], ["A set has no duplicate elements [1]."])
+
+    result = setup.agent.ask("What is a set?", [URL])
+
+    request = setup.answerer.requests[0][0][-1]["content"]
+    assert SET_TEXT in request
+    assert PASS_TEXT not in request
+    assert request.count("[1] ") == 1  # the named excerpt is the first the model sees, and the answer cites it so
+    assert not result.abstained
+    assert [citation.number for citation in result.citations] == [1]
+    assert result.excerpts == (SET_TEXT,)  # what the answer is based on, not what the search found
+    assert "Graded the excerpts: enough to answer, from 1 of 2." in result.steps
+
+
+@pytest.mark.parametrize(
+    ("reply", "kept"),
+    [
+        (_enough_from(), (PASS_TEXT, SET_TEXT)),  # none named: all are used, as before
+        (_enough_from(0, 3, 7), (PASS_TEXT, SET_TEXT)),  # numbers that are not excerpts name nothing
+        (_enough_from(2, 2, 9), (SET_TEXT,)),  # a number is counted once, and a wrong one is ignored
+        (_enough_from(2, 1), (PASS_TEXT, SET_TEXT)),  # the order of the search is kept, not the order named
+        (_enough_from(1, 2), (PASS_TEXT, SET_TEXT)),
+    ],
+)
+def test_the_numbers_the_grade_names_are_checked_before_they_are_used(reply: str, kept: tuple[str, ...]) -> None:
+    setup = _setup([reply], [CITED_ANSWER])
+
+    result = setup.agent.ask(QUESTION, [URL])
+
+    assert result.excerpts == kept
+
+
+def test_a_correction_is_asked_from_the_same_excerpts_as_the_answer() -> None:
+    setup = _setup([_enough_from(2)], [INVENTED_FIGURE, "A set has no duplicate elements [1]."])
+
+    result = setup.agent.ask("What is a set?", [URL])
+
+    assert not result.abstained
+    repair_request = setup.answerer.requests[1][0][-1]["content"]
+    assert SET_TEXT in repair_request
+    assert PASS_TEXT not in repair_request
+
+
+def test_the_excerpts_named_by_a_grade_that_was_not_enough_are_not_kept_for_the_next_answer() -> None:
+    weak_with_a_number = '{"sufficient": false, "reason": "no definition", "useful": [1]}'
+    setup = _setup(
+        [weak_with_a_number, REWRITTEN, _enough_from(3)],
+        ["Pass is a null operation [1]."],
+        searches=[FIRST_SEARCH, SECOND_SEARCH],
+    )
+
+    result = setup.agent.ask(QUESTION, [URL])
+
+    request = setup.answerer.requests[0][0][-1]["content"]
+    assert EXTRA_TEXT in request
+    assert PASS_TEXT not in request  # number 1 of the weak grade named nothing; number 3 of the second grade did
+    assert result.excerpts == (EXTRA_TEXT,)
