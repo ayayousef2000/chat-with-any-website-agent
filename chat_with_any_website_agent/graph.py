@@ -57,6 +57,7 @@ from chat_with_any_website_agent.prompts import (
     is_not_covered,
 )
 from chat_with_any_website_agent.state import AgentState, new_state
+from chat_with_any_website_agent.trace import append_trace
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -306,6 +307,7 @@ class SourceAgent:
         *,
         pages: PageSource | None = None,
         context: ContextSource | None = None,
+        trace_file: str = "",
     ) -> None:
         """Create the agent.
 
@@ -320,7 +322,9 @@ class SourceAgent:
                 only part of the question.
             context: Finds the text next to the best excerpts. Without it the excerpts are never widened, whatever
                 ``max_expansions`` says.
+            trace_file: A file that gets one JSON line for every question (see ``trace``). Blank switches it off.
         """
+        self._trace_file = trace_file
         self._retriever = retriever
         self._limits = limits
         self._links = links
@@ -363,8 +367,15 @@ class SourceAgent:
             final = self._graph.invoke(state, config=config)
         except GraphRecursionError:
             logger.warning("The agent stopped at the recursion limit of the graph")
-            return AgentAnswer(answer=NOT_COVERED_MESSAGE, abstained=True, reason=STEP_LIMIT_REASON)
-        return _answer(final)
+            answer = AgentAnswer(answer=NOT_COVERED_MESSAGE, abstained=True, reason=STEP_LIMIT_REASON)
+        else:
+            answer = _answer(final)
+        append_trace(self._trace_file, question.strip(), answer)
+        return answer
+
+    def diagram(self) -> str:
+        """Draw the graph as a Mermaid flowchart, built from the compiled graph itself so that it cannot go stale."""
+        return str(self._graph.get_graph().draw_mermaid())
 
     def _build(self) -> Any:
         graph = StateGraph(AgentState)

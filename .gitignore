@@ -27,6 +27,8 @@ htmlcov/
 build/
 dist/
 eval/results*.json
+# The optional local trace of the questions (AGENT_TRACE_FILE) holds what people asked
+*.jsonl
 
 # Editors and operating systems
 .idea/
