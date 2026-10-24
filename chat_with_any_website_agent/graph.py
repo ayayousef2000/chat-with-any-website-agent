@@ -482,7 +482,9 @@ class SourceAgent:
         return list(found.values())
 
     def _retrieve(self, state: AgentState) -> AgentState:
-        retriever = self._retriever.model_copy(update={"urls": state["urls"]})
+        # The pages the question gives each keep their best excerpts; the pages that were opened by a link only compete.
+        given = [url for url in state["urls"] or [] if url not in state["followed"]]
+        retriever = self._retriever.model_copy(update={"urls": state["urls"], "guaranteed": given})
         documents = retriever.invoke(state["query"])
         seen = state.get("seen", [])
         fresh = [key for key in dict.fromkeys(_excerpt_key(document) for document in documents) if key not in seen]
