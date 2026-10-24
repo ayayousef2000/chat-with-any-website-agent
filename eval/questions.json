@@ -417,7 +417,7 @@
         "question": "What does the pass statement do, and how many parallel attention heads does the Transformer model use?",
         "reference": "The pass statement does nothing. The Transformer model uses h = 8 parallel attention layers, or heads.",
         "must_contain": ["The pass statement does nothing", "h = 8"],
-        "answer_must_contain": ["nothing", "8"],
+        "answer_must_contain": ["nothing", "eight"],
         "sources": ["https://arxiv.org/pdf/1706.03762"],
         "category": "multi_source_mixed"
       }
