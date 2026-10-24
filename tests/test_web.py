@@ -973,3 +973,87 @@ def test_settings_that_are_not_valid_are_named_without_their_values(
 
     assert code == EXIT_BAD_SETTINGS
     assert "The settings are not valid (COHERE_API_KEY: Field required" in capsys.readouterr().err
+
+
+# --- the free daily limit of the language model ---
+
+DAY_USED_UP = ServiceBusyError(
+    "Groq is busy right now. Try again in about 3 hours.", retry_after=10_800, service="Groq"
+)
+
+
+class FakeClock:
+    """A time that only moves when a test says so."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _client_with_clock(monkeypatch: pytest.MonkeyPatch, runtime: FakeRuntime) -> tuple[TestClient, FakeClock]:
+    client, _, _ = _client(monkeypatch, runtime)
+    clock = FakeClock()
+    client.app.state.service._clock = clock  # type: ignore[attr-defined]
+    return client, clock
+
+
+def test_once_the_models_day_is_used_up_questions_are_refused_before_they_spend_any_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = FakeRuntime(error=DAY_USED_UP)
+    client, _ = _client_with_clock(monkeypatch, runtime)
+
+    first = client.post("/api/ask", json=BODY)  # this question finds out
+    second = client.post("/api/ask", json=BODY)
+
+    assert first.status_code == 429
+    assert second.status_code == 429
+    assert "free daily limit" in second.json()["detail"]
+    assert "about 3 hours" in second.json()["detail"]
+    assert second.headers["retry-after"] == "10800"
+    assert len(runtime.ingested) == 1  # the second question loaded nothing and searched nothing
+
+
+def test_the_models_day_ends_when_the_wait_is_over(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = FakeRuntime(error=DAY_USED_UP)
+    client, clock = _client_with_clock(monkeypatch, runtime)
+    client.post("/api/ask", json=BODY)
+    runtime.error = None
+
+    clock.now += 10_000
+    assert client.post("/api/ask", json=BODY).status_code == 429  # about 13 minutes are still left
+    clock.now += 801
+
+    answered = client.post("/api/ask", json=BODY)
+
+    assert answered.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ServiceBusyError("Groq is busy right now.", retry_after=20, service="Groq"),  # a limit of a minute
+        ServiceBusyError("Cohere is busy right now.", retry_after=10_800, service="Cohere"),  # not the model
+        ServiceBusyError("Groq is busy right now.", retry_after=10_800),  # the service is not named
+    ],
+)
+def test_only_a_long_wait_of_the_model_stops_the_questions(
+    monkeypatch: pytest.MonkeyPatch, error: ServiceBusyError
+) -> None:
+    runtime = FakeRuntime(error=error)
+    client, _ = _client_with_clock(monkeypatch, runtime)
+    client.post("/api/ask", json=BODY)
+    runtime.error = None
+
+    assert client.post("/api/ask", json=BODY).status_code == 200
+
+
+def test_loading_a_page_is_still_allowed_while_the_models_day_is_used_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = FakeRuntime(error=DAY_USED_UP)
+    client, _ = _client_with_clock(monkeypatch, runtime)
+    client.post("/api/ask", json=BODY)
+    runtime.error = None
+
+    assert client.post("/api/ingest", json={"url": URL}).status_code == 200

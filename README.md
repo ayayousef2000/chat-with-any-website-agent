@@ -16,7 +16,7 @@ question → analyze → retrieve → grade ─ enough ─→ generate → verif
 ```
 
 - **Retrieve.** A hybrid search (keywords and vectors) in Weaviate, then a Cohere rerank keeps the best few excerpts.
-- **Grade.** A small model decides whether the excerpts are enough to answer.
+- **Grade.** A small model decides whether the excerpts are enough to answer, and names the ones the answer needs, so that the larger model reads only those.
 - **Follow links.** When they are not, a small model picks at most two links from a numbered list of the links on the pages read so far. Only links to the same site are offered, and only pages that its `robots.txt` allows are opened. The new pages are searched together with the first one.
 - **Rewrite and retry.** If that is not enough either, the query is rewritten and searched again, within a limit.
 - **Generate and verify.** A larger model writes the answer and cites the excerpts as `[1]`, `[2]`. Plain code then checks that every cited excerpt exists, that each cited sentence shares its content words with it and that every number in the answer is written in the excerpts. A rejected answer is corrected once.
@@ -26,21 +26,22 @@ Every question runs within hard limits on steps, model calls, rewrites and pages
 
 ## Results
 
-The agent was evaluated on 24 questions over public sources: pages of the Python tutorial, the paper "Attention Is All You Need" (PDF) and an Arabic Wikipedia article. A separate model judges each answer against a reference answer and the excerpts the agent used. The set is small, so treat the numbers as a first measurement and not as a benchmark.
+The agent was evaluated on 55 questions over public sources: pages of the Python tutorial, the paper "Attention Is All You Need" (PDF), the Pro Git book and an Arabic Wikipedia article. A separate model judges each answer against a reference answer and the excerpts the agent used. The set is small, so treat the numbers as a first measurement and not as a benchmark.
 
 | Category | Questions | Correct |
 |---|---|---|
 | Single page | 4 | 3 |
 | Two sources given | 4 | 4 |
-| PDF, facts from a given page | 3 | 3 |
+| PDF, facts from a given page | 6 | 6 |
 | Arabic | 2 | 2 |
-| Unanswerable (the right answer is that the source does not cover it) | 5 | 5 |
-| Multi-page (the answer is on a page linked from the start page) | 6 | 6 |
-| **All** | 24 | **23 (96%)** |
+| Text that the chunker cuts apart (an example or a list across two chunks) | 16 | 16 |
+| Unanswerable (the right answer is that the source does not cover it) | 9 | 8 |
+| Multi-page (the answer is on a page linked from the start page; 6 on the Python tutorial, 8 on the Pro Git book with 148 links on its index page) | 14 | 14 |
+| **All** | 55 | **53 (96%)** |
 
-- The one miss was an answer the judge model marked wrong although it is right: the judge was too strict.
+- Both misses were marked wrong by the judge model although the answers are right: the judge was too strict. Read by hand, all 55 are right.
 - Without link following, the same agent answers none of the multi-page questions.
-- A question costs about 6,000 Groq tokens on average, including the judge.
+- A question costs about 4,600 Groq tokens on average, not counting the judge.
 - Known limit: the citation check compares words and numbers, so an answer can still add a detail that the source does not state.
 
 ## Requirements
