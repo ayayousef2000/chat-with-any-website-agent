@@ -22,8 +22,10 @@ if TYPE_CHECKING:
 
     from langchain_core.documents import Document
 
-# How many characters of an excerpt the model is shown, which keeps a request within the token limit of a key.
-EXCERPT_CHARS = 1500
+# How many characters of an excerpt the model is shown, which keeps a request within the token limit of a key. A chunk
+# has at most 2,000 characters (``ingest.DEFAULT_CHUNK_SIZE``), a little more when it keeps a heading with the text that
+# follows, so the limit must not be lower: the end of a chunk would be cut off and a sentence there could not be read.
+EXCERPT_CHARS = 2200
 
 # The share of the content words of a cited sentence that must appear in the excerpts it cites.
 MIN_SUPPORT = 0.5
