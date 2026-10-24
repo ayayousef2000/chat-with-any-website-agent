@@ -373,10 +373,6 @@ class SourceAgent:
         append_trace(self._trace_file, question.strip(), answer)
         return answer
 
-    def diagram(self) -> str:
-        """Draw the graph as a Mermaid flowchart, built from the compiled graph itself so that it cannot go stale."""
-        return str(self._graph.get_graph().draw_mermaid())
-
     def _build(self) -> Any:
         graph = StateGraph(AgentState)
         graph.add_node("analyze", self._analyze)
