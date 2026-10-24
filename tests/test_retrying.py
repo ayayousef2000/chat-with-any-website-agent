@@ -135,6 +135,17 @@ def test_a_service_that_asks_for_a_longer_wait_than_allowed_is_not_waited_for() 
     assert (operation.calls, pauses) == (1, [])
 
 
+def test_the_busy_error_names_the_service_that_was_busy() -> None:
+    operation = Flaky(TransientError(**{"retry-after": "7200"}))
+    retrier, _ = _retrier(RetryPolicy(max_delay=20))
+
+    with pytest.raises(ServiceBusyError) as raised:
+        retrier.call(operation, name="Groq")
+
+    assert raised.value.service == "Groq"
+    assert str(raised.value) == "Groq is busy right now. Try again in about 2 hours."
+
+
 def test_it_stops_when_the_total_waiting_time_would_pass_the_budget() -> None:
     operation = Flaky(TransientError(), TransientError(), TransientError())
     retrier, pauses = _retrier(RetryPolicy(attempts=5, base_delay=2, max_delay=20, budget=3))
@@ -199,6 +210,10 @@ def test_a_negative_wait_becomes_zero() -> None:
         (23.4, "about 23 seconds"),
         (89, "about 89 seconds"),
         (200, "a few minutes"),
+        (5400, "a few minutes"),
+        (5401, "about 2 hours"),
+        (10_800, "about 3 hours"),
+        (50_000, "about 14 hours"),
     ],
 )
 def test_waits_are_described_in_words(seconds: float | None, text: str) -> None:

@@ -23,6 +23,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
@@ -44,7 +45,7 @@ from chat_with_any_website_agent.errors import (
 )
 from chat_with_any_website_agent.fetching import normalize_url
 from chat_with_any_website_agent.follow_up import Turn, standalone_question
-from chat_with_any_website_agent.ratelimit import ClientLimits
+from chat_with_any_website_agent.ratelimit import ClientLimits, describe_wait
 from chat_with_any_website_agent.smoke import secret_values
 from chat_with_any_website_agent.usage import UsageCounter
 from chat_with_any_website_agent.wiring import build_runtime
@@ -80,6 +81,13 @@ MAX_HISTORY_TURNS = 10
 
 BUSY_MESSAGE = "The server is busy with another request. Please try again in a few seconds."
 BUSY_RETRY_SECONDS = 5
+# A wait of at least this many seconds that Groq asks for is not a limit of a minute: the free plan's tokens for the
+# day are used up. Until it is over, questions are refused before they spend a call of any service.
+DAILY_LIMIT_SECONDS = 1800
+DAILY_LIMIT_MESSAGE = (
+    "The free daily limit of the language model has been reached, so questions cannot be answered right now. "
+    "Please try again in {wait}."
+)
 HEALTH_PATH = "/api/health"
 FORBIDDEN_MESSAGE = "This server answers only to pages that it serves itself."
 
@@ -198,17 +206,25 @@ def _host_name(host: str) -> str:
 class Service:
     """Loads sources, answers questions and deletes stored copies, one thing at a time."""
 
-    def __init__(self, settings: Settings, open_runtime: Callable[[UsageCounter], AgentRuntime]) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        open_runtime: Callable[[UsageCounter], AgentRuntime],
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         """Create the service.
 
         Args:
             settings: The settings, whose keys are never allowed into a message.
             open_runtime: Connects to the services for one request. It gets the counter of the request, and its result
                 is closed when the request is done.
+            clock: The time in seconds, replaceable for tests.
         """
         self._settings = settings
         self._open = open_runtime
+        self._clock = clock
         self._running = threading.Lock()
+        self._model_blocked_until = 0.0  # the time from which the language model may be asked again
 
     def ingest(self, request: IngestRequest) -> IngestResponse:
         """Make a source ready for questions, with the page as it is now.
@@ -243,8 +259,9 @@ class Service:
 
         Raises:
             ServerError: If something else is running, the source cannot be loaded, a service is busy or failed, or a
-                limit was reached.
+                limit was reached, including the free daily limit of the language model.
         """
+        self._refuse_while_the_models_day_is_used_up()
 
         def answer(runtime: AgentRuntime) -> AskResponse:
             self._make_room(runtime)
@@ -301,6 +318,7 @@ class Service:
         except (InvalidURLError, FetchError, ExtractionError) as error:
             raise ServerError(400, str(error)) from error
         except ServiceBusyError as error:
+            self._note_busy(error)
             raise ServerError(429, str(error), error.retry_after) from error
         except BudgetExceededError as error:
             raise ServerError(429, str(error)) from error
@@ -309,6 +327,23 @@ class Service:
             raise ServerError(503, self._without_keys(f"A service failed: {type(error).__name__}: {error}")) from error
         finally:
             self._running.release()
+
+    def _note_busy(self, error: ServiceBusyError) -> None:
+        """Remember that the model's day is used up, when Groq asks for a wait too long for a limit of a minute."""
+        wait = error.retry_after
+        if error.service == "Groq" and wait is not None and wait >= DAILY_LIMIT_SECONDS:
+            self._model_blocked_until = self._clock() + wait
+
+    def _refuse_while_the_models_day_is_used_up(self) -> None:
+        """Refuse a question at once while the free daily limit of the model is known to be reached.
+
+        A question would load the page and search it, which uses calls of Cohere and Weaviate, and only then find that
+        the model cannot be asked. Those calls are limited too (a free Cohere key has a monthly quota), so they are
+        not spent. Loading a page is still allowed.
+        """
+        wait = self._model_blocked_until - self._clock()
+        if wait > 0:
+            raise ServerError(429, DAILY_LIMIT_MESSAGE.format(wait=describe_wait(wait)), wait)
 
     def _make_room(self, runtime: AgentRuntime) -> None:
         """Delete the stored sources when more chunks are stored than the limit allows, so that the next page fits.

@@ -56,10 +56,14 @@ def describe_wait(seconds: float | None) -> str:
 
     Returns:
         For example ``"about 23 seconds"``. A wait the service did not name is ``"a few seconds"`` (these limits
-        are counted per minute, so a place usually frees up quickly), and a long one is ``"a few minutes"``.
+        are counted per minute, so a place usually frees up quickly), a long one is ``"a few minutes"``, and one of
+        more than an hour and a half, such as the end of a daily limit, is counted in hours (``"about 3 hours"``).
     """
     if seconds is None:
         return "a few seconds"
+    if seconds > 5400:
+        hours = round(seconds / 3600)
+        return f"about {hours} hours"
     if seconds > 90:
         return "a few minutes"
     rounded = max(1, round(seconds))
@@ -151,4 +155,5 @@ class Retrier:
 
 
 def _busy(name: str, wait: float | None) -> ServiceBusyError:
-    return ServiceBusyError(f"{name} is busy right now. Try again in {describe_wait(wait)}.", retry_after=wait)
+    message = f"{name} is busy right now. Try again in {describe_wait(wait)}."
+    return ServiceBusyError(message, retry_after=wait, service=name)

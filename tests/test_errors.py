@@ -29,6 +29,11 @@ def test_a_busy_service_error_may_have_no_wait_to_name() -> None:
     assert ServiceBusyError("busy").retry_after is None
 
 
+def test_a_busy_service_error_may_name_the_service() -> None:
+    assert ServiceBusyError("busy", retry_after=3, service="Groq").service == "Groq"
+    assert ServiceBusyError("busy").service is None
+
+
 def test_a_budget_error_names_the_service_and_the_limit() -> None:
     raised = BudgetExceededError("limit reached", service="cohere", limit=300)
     assert isinstance(raised, AgentError)

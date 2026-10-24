@@ -30,11 +30,13 @@ class ServiceBusyError(AgentError):
 
     Attributes:
         retry_after: How many seconds to wait before trying again, or ``None`` when the service did not say.
+        service: The name of the service that was busy, for example ``"Groq"``, or ``None`` when it is not known.
     """
 
-    def __init__(self, message: str, retry_after: float | None = None) -> None:
+    def __init__(self, message: str, retry_after: float | None = None, service: str | None = None) -> None:
         super().__init__(message)
         self.retry_after = retry_after
+        self.service = service
 
 
 class TooManyRequestsError(AgentError):
