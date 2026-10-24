@@ -261,6 +261,14 @@ def test_the_agent_can_read_the_pages_that_a_question_names(monkeypatch: pytest.
     assert reader._reranker is runtime.cohere[1]  # and the most relevant excerpts are kept with the same reranker
 
 
+def test_the_trace_file_comes_from_the_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fakes(monkeypatch)
+
+    assert build_runtime(_settings(monkeypatch), UsageCounter()).agent._trace_file == ""
+    traced = build_runtime(_settings(monkeypatch, AGENT_TRACE_FILE="trace.jsonl"), UsageCounter())
+    assert traced.agent._trace_file == "trace.jsonl"
+
+
 def test_the_agent_can_widen_its_excerpts_with_the_chunks_of_the_same_store(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = _settings(monkeypatch)
     _fakes(monkeypatch)

@@ -78,6 +78,7 @@ def test_default_limits(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.agent_max_pages == 5
     assert settings.agent_max_llm_calls == 12
     assert settings.agent_max_rewrites == 2
+    assert settings.agent_trace_file == ""  # no trace is written unless a file is named
     assert settings.eval_max_cohere_calls == 300
     assert settings.eval_max_groq_calls == 200
     assert settings.eval_max_groq_tokens == 120_000

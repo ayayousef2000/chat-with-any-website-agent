@@ -2,17 +2,72 @@
 
 An agentic RAG workflow built with [LangGraph](https://langchain-ai.github.io/langgraph/) and LangChain. It answers questions about a web page or a PDF file with cited sources. It grades what it finds, follows links to other pages of the same site when the evidence is not enough, checks its own citations, and says that the source does not cover the question instead of inventing an answer.
 
+**Live demo:** https://chat-with-any-website-agent.onrender.com
+
 This is the agent version of [Chat With Any Website](https://github.com/ayayousef2000/chat-with-any-website), which answers questions about one page or PDF with a fixed pipeline. It is a separate project with its own repository, keys and vector database.
 
 ## How it works
 
-```
-question → analyze → retrieve → grade ─ enough ─→ generate → verify ─ citations hold ─→ answer
-                        ↑          │                  │          │
-                        │          │                  │          └─ citations do not hold ─→ repair (once) ─→ verify
-                        └ rewrite ─┘ not enough       └─ no answer in the excerpts ─┐
-                                     and a retry fits                               ↓
-                                     otherwise ───────────────────────────────→ abstain
+The graph, drawn from the code. Solid lines always happen; dotted lines are decisions that plain code takes after a step.
+
+```mermaid
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	analyze(analyze)
+	read_pages(read_pages)
+	retrieve(retrieve)
+	grade(grade)
+	expand(expand)
+	choose(choose)
+	follow(follow)
+	rewrite(rewrite)
+	generate(generate)
+	verify(verify)
+	repair(repair)
+	abstain(abstain)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> analyze;
+	analyze -.-> read_pages;
+	analyze -.-> retrieve;
+	choose -.-> abstain;
+	choose -.-> follow;
+	choose -.-> rewrite;
+	expand -.-> abstain;
+	expand -.-> choose;
+	expand -.-> grade;
+	expand -.-> rewrite;
+	follow -.-> abstain;
+	follow -.-> choose;
+	follow -.-> retrieve;
+	follow -.-> rewrite;
+	generate -.-> abstain;
+	generate -.-> verify;
+	grade -.-> abstain;
+	grade -.-> choose;
+	grade -.-> expand;
+	grade -.-> generate;
+	grade -.-> rewrite;
+	read_pages -.-> abstain;
+	read_pages -.-> grade;
+	read_pages -.-> retrieve;
+	repair -.-> abstain;
+	repair -.-> verify;
+	retrieve -.-> abstain;
+	retrieve -.-> grade;
+	rewrite --> retrieve;
+	verify -.-> __end__;
+	verify -.-> abstain;
+	verify -.-> repair;
+	abstain --> __end__;
+	expand -.-> expand;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
 ```
 
 - **Retrieve.** A hybrid search (keywords and vectors) in Weaviate, then a Cohere rerank keeps the best few excerpts.

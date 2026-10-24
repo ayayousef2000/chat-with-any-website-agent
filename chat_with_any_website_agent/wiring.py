@@ -139,6 +139,7 @@ def build_runtime(
         follower if follow_links else None,
         pages=PageReader(store, reranker),
         context=ContextExpander(store),
+        trace_file=settings.agent_trace_file,
     )
     return AgentRuntime(
         agent=agent,
