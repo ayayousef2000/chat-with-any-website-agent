@@ -3,7 +3,7 @@
 # Both base images are pinned to exact digests, like the actions in .github/workflows. Dependabot proposes updates.
 
 # uv, the tool that installs the locked dependencies (0.12.23)
-FROM ghcr.io/astral-sh/uv:0.13.4@sha256:9f130421e930bfbdc563c00740466603f8723158e90297d07957c2294640262b AS uv
+FROM ghcr.io/astral-sh/uv:0.13.5@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff AS uv
 
 # --- Build stage: install the locked runtime dependencies and the package into a virtual environment ------------------
 # python 3.14.8
