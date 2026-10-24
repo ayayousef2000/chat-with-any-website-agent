@@ -30,6 +30,8 @@ class AgentState(TypedDict, total=False):
         seen: The keys of every excerpt that any search has found so far.
         fresh: How many excerpts the latest search found that no earlier search had found.
         grade: The verdict on those excerpts.
+        selected: The excerpts that the grade named as the ones the answer needs. Empty when it named none, and then
+            the answer is written from all of ``documents``.
         frontier: The links of the pages read so far that were not opened yet, in the order of the pages.
         hops: How many times the agent has chosen links to open.
         links_closed: ``True`` once the agent has found no link worth opening, or no link can be opened any more.
@@ -58,6 +60,7 @@ class AgentState(TypedDict, total=False):
     seen: list[str]
     fresh: int
     grade: Grade
+    selected: list[Document]
     frontier: list[Link]
     hops: int
     links_closed: bool

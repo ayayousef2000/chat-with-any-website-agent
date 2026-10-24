@@ -40,6 +40,7 @@ PAGES = [
                 "question": "q1",
                 "reference": "r1",
                 "must_contain": ["Alpha"],
+                "answer_must_contain": ["Beta", "Gamma"],
                 "category": "multi_page",
                 "language": "ar",
                 "sources": ["https://b.example/"],
@@ -70,6 +71,7 @@ def test_a_question_set_is_read_with_its_defaults(tmp_path: Path) -> None:
         question="q1",
         reference="r1",
         must_contain=("Alpha",),
+        answer_must_contain=("Beta", "Gamma"),
         history=(Turn("earlier", "reply"),),
         category="multi_page",
         language="ar",
@@ -104,6 +106,10 @@ def test_a_question_set_is_read_with_its_defaults(tmp_path: Path) -> None:
             "history answer",
         ),
         ([{"url": "u", "questions": [{"question": "q", "reference": "r", "must_contain": "x"}]}], "must be a list"),
+        (
+            [{"url": "u", "questions": [{"question": "q", "reference": "r", "answer_must_contain": "x"}]}],
+            "answer_must_contain must be a list",
+        ),
         (
             [{"url": "u", "questions": [{"question": "q", "reference": "r"}, {"question": "q", "reference": "r"}]}],
             "asked twice",
@@ -340,6 +346,45 @@ def test_an_expected_phrase_is_found_whatever_the_formatting_of_the_excerpt(exce
     report = run_evaluation(Formatted(usage), [_case("q1", must_contain=(phrase,))], FakeJudge(), usage)
 
     assert report.results[0].retrieval_hit is True
+
+
+@pytest.mark.parametrize(
+    ("answer", "phrases", "found"),
+    [
+        ("The `pass` statement does nothing [1].", ("does nothing",), True),
+        ("It takes 6 layers and 8 heads.", ("6 layers", "8 heads"), True),
+        ("It takes 6 layers.", ("6 layers", "8 heads"), False),  # every phrase is needed, not one of them
+        ("The source does not cover this question, so there is no answer to give from it.", ("6 layers",), False),
+        ("A café", ("cafe",), True),
+        ("A 4\N{NON-BREAKING HYPHEN}layer Transformer", ("4-layer",), True),  # a model's typographic hyphen
+        ("From 5\N{EN DASH}10 and \N{MINUS SIGN}3", ("5-10", "-3"), True),
+        ("About 37\N{NARROW NO-BREAK SPACE}000 tokens", ("37000 tokens",), True),
+        ("About 37\N{NO-BREAK SPACE}000 tokens", ("37000",), True),
+        ("About 37 000 tokens", ("37000",), True),
+        ("About 37000 tokens", ("37 000",), True),  # the phrase may be the one with the space
+        ("About 38 000 tokens", ("37000",), False),
+        ("In 2014 3 papers and 12 345 more", ("2014", "3 papers"), True),  # only a group of three digits is joined
+    ],
+)
+def test_the_answer_must_state_every_expected_phrase(answer: str, phrases: tuple[str, ...], found: bool) -> None:
+    usage = UsageCounter()
+
+    class Answering(FakeSystem):
+        def ask(self, case: Case) -> Outcome:
+            return Outcome(answer=answer)
+
+    report = run_evaluation(Answering(usage), [_case("q1", answer_must_contain=phrases)], FakeJudge(), usage)
+
+    assert report.results[0].phrases_found is found
+
+
+def test_a_question_without_expected_phrases_or_without_an_answer_has_no_phrase_score() -> None:
+    usage = UsageCounter()
+    cases = [_case("q1"), _case("q2", answer_must_contain=("x",), answerable=False, reference=None)]
+
+    report = run_evaluation(FakeSystem(usage), cases, FakeJudge(), usage)
+
+    assert [result.phrases_found for result in report.results] == [None, None]
 
 
 def test_how_the_system_got_to_its_answer_is_kept_in_the_result() -> None:

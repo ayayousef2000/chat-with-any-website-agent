@@ -22,8 +22,10 @@ if TYPE_CHECKING:
 
     from langchain_core.documents import Document
 
-# How many characters of an excerpt the model is shown, which keeps a request within the token limit of a key.
-EXCERPT_CHARS = 1500
+# How many characters of an excerpt the model is shown, which keeps a request within the token limit of a key. A chunk
+# has at most 2,000 characters (``ingest.DEFAULT_CHUNK_SIZE``), a little more when it keeps a heading with the text that
+# follows, so the limit must not be lower: the end of a chunk would be cut off and a sentence there could not be read.
+EXCERPT_CHARS = 2200
 
 # The share of the content words of a cited sentence that must appear in the excerpts it cites.
 MIN_SUPPORT = 0.5
@@ -55,9 +57,15 @@ _MARKER = re.compile(rf"[{_OPENING}](\d+(?:\s*,\s*\d+)*)(?:{_DAGGER}[^{_CLOSING}
 # that "... nothing. [1]" stays one sentence.
 _SENTENCE_BREAK = re.compile(rf"(?<=[.!?{_ARABIC_QUESTION_MARK}])\s+(?!\[)|\n+")
 _WORD = re.compile(r"\w+")
-# A number written with digits, with groups of thousands ("1,000") and decimals ("3.11"). It is not part of a word
+# What may separate the groups of thousands of a number: a comma ("1,000") or one of the spaces that typography uses
+# (a model wrote "37 000" with a narrow no-break space): the no-break, thin and narrow no-break spaces.
+_GROUP_SEPARATORS = ",\N{NO-BREAK SPACE}\N{THIN SPACE}\N{NARROW NO-BREAK SPACE}"
+# A number written with digits, with groups of thousands and decimals ("3.11"). In an answer it is not part of a word
 # ("x86", "2nd") and not the tail of a version ("3.11.4" is read as 3.11).
-_NUMBER = re.compile(r"(?<![\w.])\d+(?:,\d{3})*(?:\.\d+)?(?!\w)")
+_NUMBER = re.compile(rf"(?<![\w.])\d+(?:[{_GROUP_SEPARATORS}]\d{{3}})*(?:\.\d+)?(?!\w)")
+# A number written in an excerpt. The text of a PDF file often loses the space after a number ("dmodel = 1024on"), so a
+# number there may touch a word, and only the digits around it are looked at.
+_WRITTEN_NUMBER = re.compile(rf"(?<!\d)\d+(?:[{_GROUP_SEPARATORS}]\d{{3}})*(?:\.\d+)?")
 # The number that starts a line of a numbered list ("1. First step").
 _LIST_MARKER = re.compile(r"^\s*\d+[.)]\s+")
 # The digits 0 to 9 are often written as words in a text, so a small number is also accepted as its English word.
@@ -205,9 +213,9 @@ def _evidence_text(documents: Sequence[Document]) -> str:
 
 
 def _canonical(number: str) -> str:
-    """A number written with digits of any script as plain digits without groups of thousands."""
+    """A number written with digits of any script as plain digits without the separators of groups of thousands."""
     digits = "".join(str(unicodedata.digit(character)) if character.isdigit() else character for character in number)
-    return digits.replace(",", "")
+    return re.sub(f"[{_GROUP_SEPARATORS}]", "", digits)
 
 
 def _unwritten_number(sentence: str, evidence_text: str, question: str) -> str | None:
@@ -216,7 +224,7 @@ def _unwritten_number(sentence: str, evidence_text: str, question: str) -> str |
     found = [match.group() for match in _NUMBER.finditer(body)]
     if not found:
         return None
-    known = {_canonical(match.group()) for match in _NUMBER.finditer(f"{evidence_text} {question}")}
+    known = {_canonical(match.group()) for match in _WRITTEN_NUMBER.finditer(f"{evidence_text} {question}")}
     lowered = evidence_text.casefold()
     for shown in found:
         value = _canonical(shown)

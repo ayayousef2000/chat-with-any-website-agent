@@ -8,6 +8,8 @@ system and judged by a model against a reference answer. Metrics per question:
 - ``faithful``: a judge confirms that every claim in the answer is supported by those excerpts.
 - ``correct``: a judge confirms that the answer agrees with the reference answer. For a question that the sources
   cannot answer, it confirms that the answer says so.
+- ``phrases_found``: the answer contains every phrase that a correct answer must state (no model involved), a check of
+  correctness that does not depend on the judge.
 
 The cost of each question is recorded too (calls to Cohere and Groq, Groq tokens and seconds). A run stops cleanly
 when the call or token limit it was given is reached, and the results are saved after every question, so that a run
@@ -15,6 +17,7 @@ can be continued the next day.
 """
 
 import json
+import re
 import time
 import unicodedata
 from dataclasses import asdict, dataclass, field
@@ -68,6 +71,8 @@ class Case:
         answerable: ``False`` when the sources cannot answer it, so the right answer is that they do not cover it.
         reference: The right answer. Required when the question is answerable.
         must_contain: Phrases of which at least one should be in the excerpts the answer is based on.
+        answer_must_contain: Phrases that a correct answer states, all of them. Short ones, such as a figure or the name
+            of a function, because a right answer may be worded in many ways.
         history: The earlier turns of the conversation, for a follow-up question.
         category: The kind of question, for the summary (for example ``multi_page`` or ``unanswerable``).
         language: The language of the question, for the summary.
@@ -79,6 +84,7 @@ class Case:
     answerable: bool = True
     reference: str | None = None
     must_contain: tuple[str, ...] = ()
+    answer_must_contain: tuple[str, ...] = ()
     history: tuple[Turn, ...] = ()
     category: str = DEFAULT_CATEGORY
     language: str = DEFAULT_LANGUAGE
@@ -181,6 +187,7 @@ class Result:
     agent_draft: str | None = None
     agent_steps: tuple[str, ...] = ()
     agent_excerpts: tuple[str, ...] = ()
+    phrases_found: bool | None = None
 
     @property
     def key(self) -> str:
@@ -210,8 +217,8 @@ def load_cases(path: Path) -> list[Case]:
     """Read a question set and check it.
 
     The file holds a list of pages, each with a ``url`` and its ``questions``. A question has a ``question`` and, when
-    it is answerable, a ``reference``. It may have ``must_contain``, ``history``, ``category``, ``language`` and
-    ``sources``.
+    it is answerable, a ``reference``. It may have ``must_contain``, ``answer_must_contain``, ``history``,
+    ``category``, ``language`` and ``sources``.
 
     Args:
         path: The JSON file.
@@ -289,6 +296,7 @@ def _case(item: Any, url: str, where: str) -> Case:
         answerable=answerable,
         reference=reference if isinstance(reference, str) else None,
         must_contain=_texts(item.get("must_contain"), "must_contain", where),
+        answer_must_contain=_texts(item.get("answer_must_contain"), "answer_must_contain", where),
         history=history,
         category=_text(item.get("category", DEFAULT_CATEGORY), "category", where),
         language=_text(item.get("language", DEFAULT_LANGUAGE), "language", where),
@@ -434,20 +442,34 @@ def _evaluate(system: System, judge: ChatClient, usage: UsageCounter, case: Case
         agent_draft=outcome.draft,
         agent_steps=outcome.steps,
         agent_excerpts=outcome.excerpts,
+        phrases_found=_phrases_found(case, outcome),
     )
 
 
 # Markdown marks that the text of a page may have around words: `code`, *emphasis*, _emphasis_ and escapes.
 _FORMATTING = str.maketrans("", "", "`*_\\")
+# The characters that a text may write for a hyphen: the hyphen and the non-breaking hyphen, the dashes and the minus.
+_DASHES = dict.fromkeys(
+    map(
+        ord,
+        "\N{HYPHEN}\N{NON-BREAKING HYPHEN}\N{FIGURE DASH}\N{EN DASH}\N{EM DASH}\N{HORIZONTAL BAR}\N{MINUS SIGN}",
+    ),
+    "-",
+)
+# A space between the groups of thousands of a number ("37 000"), plain or typographic. A group is three digits.
+_GROUP_SPACE = re.compile(r"(?<=\d)[ \N{NO-BREAK SPACE}\N{THIN SPACE}\N{NARROW NO-BREAK SPACE}](?=\d{3}(?!\d))")
 
 
 def _plain(text: str) -> str:
     """Lower-case a text without its Markdown marks, accents and vowel marks, and with its white space made single.
 
     A phrase is compared in this form, so that "café" is found for "cafe" and an Arabic name with its vowel marks is
-    found for the same name without them.
+    found for the same name without them. Every kind of dash is a hyphen, and the space between the groups of "37 000"
+    is dropped, so that an answer with a non-breaking hyphen in "4-layer" or a narrow no-break space in "37 000" still
+    has the phrase "4-layer" or "37000".
     """
-    decomposed = unicodedata.normalize("NFKD", text.translate(_FORMATTING))
+    grouped = _GROUP_SPACE.sub("", text.translate(_FORMATTING))
+    decomposed = unicodedata.normalize("NFKD", grouped).translate(_DASHES)
     without_marks = "".join(character for character in decomposed if unicodedata.category(character) != "Mn")
     return " ".join(without_marks.casefold().split())
 
@@ -462,6 +484,18 @@ def _retrieval_hit(case: Case, outcome: Outcome) -> bool | None:
         return None
     text = _plain("\n".join(outcome.excerpts))
     return any(_plain(phrase) in text for phrase in case.must_contain)
+
+
+def _phrases_found(case: Case, outcome: Outcome) -> bool | None:
+    """Whether the answer states every phrase of ``answer_must_contain``; ``None`` when the question lists none.
+
+    The comparison is the one of the retrieval check. An answer that refuses has none of the phrases, so a question
+    that can be answered scores ``False`` when the system wrongly refuses it.
+    """
+    if not case.answerable or not case.answer_must_contain:
+        return None
+    answer = _plain(outcome.answer)
+    return all(_plain(phrase) in answer for phrase in case.answer_must_contain)
 
 
 def run_and_save(

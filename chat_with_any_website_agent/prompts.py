@@ -44,10 +44,13 @@ class Grade(BaseModel):
     Attributes:
         sufficient: Whether the excerpts state what is needed to answer the question.
         reason: A short sentence. When the excerpts are not enough, what is missing, to help the next search.
+        useful: The numbers of the excerpts that the answer needs, when they are enough. The answer is written from
+            these only, which keeps the second request small. Empty when no excerpt was named, and then all are used.
     """
 
     sufficient: bool
     reason: str = ""
+    useful: list[int] = []
 
 
 class Rewrite(BaseModel):
@@ -84,9 +87,13 @@ GRADE_PROMPT = ChatPromptTemplate.from_messages(
             "system",
             "You judge whether excerpts from a source contain what is needed to answer a question. "
             + _UNTRUSTED
-            + ' Reply with JSON only, in this form: {{"sufficient": true or false, "reason": "one short sentence"}}. '
+            + " Reply with JSON only, in this form: "
+            '{{"sufficient": true or false, "reason": "one short sentence", "useful": [numbers]}}. '
             "Say true only if the excerpts state the answer. "
-            "When you say false, the reason says what is missing, so that a better search can be made.",
+            "When you say false, the reason says what is missing, so that a better search can be made, and useful is "
+            "empty. "
+            "When you say true, useful lists the numbers of the excerpts that the answer needs: every excerpt that "
+            "holds a part of it, and no other.",
         ),
         ("human", "Question: {question}\n\nExcerpts:\n{excerpts}"),
     ]

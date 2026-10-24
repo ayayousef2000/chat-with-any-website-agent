@@ -34,13 +34,16 @@ services:
       # stored pages are deleted before the next page is loaded, and the pages in use are loaded again on demand.
       - key: WEB_MAX_STORED_CHUNKS
         value: "20000"
-      # The limits for each visitor: questions a minute, questions a day and page loads (and deletes) an hour.
+      # The limits for each visitor: questions a minute, questions a day and page loads (and deletes) an hour. A free
+      # Groq plan allows 200,000 tokens a day for each model and 8,000 a minute, and a question uses about 3,000 to 6,000
+      # of them, so the whole site can answer about 35 to 70 questions a day. One visitor can use most of that day, so
+      # lower the limit for a day when many visitors come.
       - key: RATE_LIMIT_ENABLED
         value: "true"
       - key: RATE_LIMIT_ASKS_PER_MINUTE
-        value: "6"
+        value: "4"
       - key: RATE_LIMIT_ASKS_PER_DAY
-        value: "60"
+        value: "30"
       - key: RATE_LIMIT_LOADS_PER_HOUR
         value: "20"
       # The addresses the server trusts to say who the visitor is, so that the limits per visitor are counted per
@@ -87,9 +90,9 @@ services:
       - key: RATE_LIMIT_ENABLED
         value: "true"
       - key: RATE_LIMIT_ASKS_PER_MINUTE
-        value: "6"
+        value: "4"
       - key: RATE_LIMIT_ASKS_PER_DAY
-        value: "60"
+        value: "30"
       - key: RATE_LIMIT_LOADS_PER_HOUR
         value: "20"
       # The same trusted addresses as the production service (see above).

@@ -40,7 +40,7 @@ from langgraph.errors import GraphRecursionError
 from langgraph.graph import END, START, StateGraph
 
 from chat_with_any_website_agent.citations import Citation, format_excerpts, verify_answer
-from chat_with_any_website_agent.links import shortlist_links
+from chat_with_any_website_agent.links import is_other_language, shortlist_links
 from chat_with_any_website_agent.pages import describe_pages, pages_in_question
 from chat_with_any_website_agent.prompts import (
     ANSWER_PROMPT,
@@ -460,14 +460,17 @@ class SourceAgent:
         }
 
     def _frontier(self, pages: Sequence[str] | None, tried: Sequence[str]) -> list[Link]:
-        """The links of the pages that were not opened yet, in the order of the pages, each address once."""
+        """The links of the pages that were not opened yet, in the order of the pages, each address once.
+
+        The links to the same page in another language are left out.
+        """
         if self._links is None or pages is None or self._limits.hops == 0:
             return []
         skip = {*pages, *tried}
         found: dict[str, Link] = {}
         for page in pages:
             for link in self._links.links_of(page):
-                if link.url not in skip and link.url not in found:
+                if link.url not in skip and link.url not in found and not is_other_language(page, link.url):
                     found[link.url] = link
         return list(found.values())
 
@@ -503,7 +506,11 @@ class SourceAgent:
             except OutputParserException:
                 grade = Grade(sufficient=True, reason=UNREADABLE_GRADE_REASON)  # the check of the citations follows
         verdict = "enough to answer" if grade.sufficient else f"not enough ({grade.reason or NOT_ENOUGH_REASON})"
-        return {"grade": grade, "llm_calls": calls, "steps": [f"Graded the excerpts: {verdict}."]}
+        selected = _named_excerpts(documents, grade) if grade.sufficient else []
+        steps = [f"Graded the excerpts: {verdict}."]
+        if selected and len(selected) < len(documents):
+            steps[0] = f"Graded the excerpts: enough to answer, from {len(selected)} of {len(documents)}."
+        return {"grade": grade, "selected": selected, "llm_calls": calls, "steps": steps}
 
     def _after_grade(self, state: AgentState) -> Route:
         return next_step(state, self._routing)
@@ -631,12 +638,12 @@ class SourceAgent:
         }
 
     def _generate(self, state: AgentState) -> AgentState:
-        values = {"question": state["question"], "excerpts": format_excerpts(state["documents"])}
+        values = {"question": state["question"], "excerpts": format_excerpts(_evidence(state))}
         answer = self._answer_chain.invoke(values).strip()
         return _written(state, answer, "Wrote an answer.")
 
     def _verify(self, state: AgentState) -> AgentState:
-        result = verify_answer(state["answer"], state["documents"], question=state["question"])
+        result = verify_answer(state["answer"], _evidence(state), question=state["question"])
         if result.valid:
             return {
                 "answer": result.answer,  # with the citations written as [1]
@@ -657,7 +664,7 @@ class SourceAgent:
     def _repair(self, state: AgentState) -> AgentState:
         values = {
             "question": state["question"],
-            "excerpts": format_excerpts(state["documents"]),
+            "excerpts": format_excerpts(_evidence(state)),
             "answer": state["answer"],
             "problem": state.get("reason", ""),
         }
@@ -680,6 +687,21 @@ class SourceAgent:
 def _describe_link(link: Link) -> str:
     """A link for a line of the steps: its text and its address, or only the address when it has no text."""
     return f'"{link.text}" ({link.url})' if link.text else link.url
+
+
+def _named_excerpts(documents: Sequence[Document], grade: Grade) -> list[Document]:
+    """The excerpts that the grade named as the ones the answer needs, in the order of the search.
+
+    A number that is not an excerpt, or is named twice, is ignored. When no excerpt is left, the list is empty, and then
+    the answer is written from all of the excerpts, as it was before the grade named any.
+    """
+    wanted = {number for number in grade.useful if 1 <= number <= len(documents)}
+    return [document for number, document in enumerate(documents, start=1) if number in wanted]
+
+
+def _evidence(state: AgentState) -> list[Document]:
+    """The excerpts that the answer is written from and checked against: the ones that the grade named, or all."""
+    return state.get("selected") or state["documents"]
 
 
 def _excerpt_key(document: Document) -> str:
@@ -744,7 +766,7 @@ def _answer(state: AgentState) -> AgentAnswer:
         reason=state.get("reason") if abstained else None,
         draft=(state.get("draft") or None) if abstained else None,
         citations=citations,
-        excerpts=tuple(document.page_content for document in state.get("documents", [])),
+        excerpts=tuple(document.page_content for document in state.get("selected") or state.get("documents", [])),
         sources=tuple(dict.fromkeys(citation.url for citation in citations)),
         followed=tuple(state.get("followed", [])),
         steps=tuple(state.get("steps", [])),

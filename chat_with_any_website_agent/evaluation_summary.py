@@ -23,6 +23,7 @@ class GroupSummary:
         retrieval_hit_rate: The share of answerable questions whose excerpts held an expected phrase.
         faithfulness: The share of answers whose claims the excerpts support.
         correctness: The share of answers that agree with the reference.
+        phrase_rate: The share of answerable questions with expected phrases whose answer states all of them.
         abstention: The share of unanswerable questions that were answered by saying the sources do not cover them.
         seconds: The average time to answer a question.
         cohere_calls: The average calls to Cohere for a question.
@@ -35,6 +36,7 @@ class GroupSummary:
     retrieval_hit_rate: float | None
     faithfulness: float | None
     correctness: float | None
+    phrase_rate: float | None
     abstention: float | None
     seconds: float
     cohere_calls: float
@@ -74,6 +76,7 @@ def _summarize_group(results: Sequence[Result]) -> GroupSummary:
         retrieval_hit_rate=_rate([r.retrieval_hit for r in results if r.retrieval_hit is not None]),
         faithfulness=_rate([r.faithful for r in results if r.faithful is not None]),
         correctness=_rate([r.correct for r in results if r.correct is not None]),
+        phrase_rate=_rate([r.phrases_found for r in results if r.phrases_found is not None]),
         abstention=_rate([r.correct for r in results if not r.answerable and r.correct is not None]),
         seconds=_average([r.seconds for r in results]),
         cohere_calls=_average([r.cohere_calls for r in results]),
@@ -98,14 +101,15 @@ def format_summary(summaries: Mapping[str, GroupSummary]) -> str:
     if not summaries:
         return "No results."
     header = (
-        f"{'group':<20}{'n':>5}{'hit':>6}{'faithful':>10}{'correct':>9}{'abstain':>9}"
+        f"{'group':<20}{'n':>5}{'hit':>6}{'faithful':>10}{'correct':>9}{'phrases':>9}{'abstain':>9}"
         f"{'s/q':>8}{'groq/q':>8}{'tokens/q':>10}{'cohere/q':>10}"
     )
     lines = [header, "-" * len(header)]
     for name, group in summaries.items():
         lines.append(
             f"{name:<20}{group.questions:>5}{_percent(group.retrieval_hit_rate):>6}"
-            f"{_percent(group.faithfulness):>10}{_percent(group.correctness):>9}{_percent(group.abstention):>9}"
+            f"{_percent(group.faithfulness):>10}{_percent(group.correctness):>9}{_percent(group.phrase_rate):>9}"
+            f"{_percent(group.abstention):>9}"
             f"{group.seconds:>8.1f}{group.groq_calls:>8.1f}{group.groq_tokens:>10.0f}{group.cohere_calls:>10.1f}"
         )
     unjudged = summaries[OVERALL].unjudged if OVERALL in summaries else 0
