@@ -57,7 +57,7 @@ repos:
   # uv: the lockfile must match pyproject.toml, and the locked dependencies must have no known vulnerabilities.
   # Both run only when pyproject.toml or uv.lock is part of the commit. The audit needs the network.
   - repo: https://github.com/astral-sh/uv-pre-commit
-    rev: 0.13.1
+    rev: 0.13.5
     hooks:
       - id: uv-lock
         args: [--check]
