@@ -118,7 +118,13 @@ files = ["chat_with_any_website_agent", "tests"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers --strict-config"
-filterwarnings = ["error"]
+# Warnings are errors, except the notice that `langsmith` (a dependency of `langchain-core`) raises when it is imported:
+# it calls a function of Python that is removed in Python 3.16. The notice is about the library's code, and since 0.14.17
+# it is raised when its pytest plugin is loaded, before any of our code runs. See `__init__.py` for the runtime side.
+filterwarnings = [
+    "error",
+    "ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning:langsmith",
+]
 
 [tool.coverage.run]
 source = ["chat_with_any_website_agent"]
