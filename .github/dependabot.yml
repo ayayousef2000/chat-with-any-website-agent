@@ -63,6 +63,11 @@ updates:
     labels:
       - dependencies
       - docker
+    # Stay on the Python version the project is tested and typed against (3.14). A new minor version needs a
+    # wheel for every locked dependency: `zstandard` has none for 3.15 yet, so the image build fails.
+    ignore:
+      - dependency-name: python
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
     groups:
       docker-images:
         patterns: ["*"]
