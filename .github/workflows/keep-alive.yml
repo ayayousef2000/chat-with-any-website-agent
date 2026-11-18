@@ -1,0 +1,109 @@
+name: Keep alive
+
+# A free Weaviate Cloud cluster is suspended after 7 days without use and deleted after 30 days. This workflow sends
+# a few authenticated read requests to the cluster every day so that it is never idle. It also re-enables itself,
+# because GitHub turns off scheduled workflows of a public repository after 60 days without repository activity.
+#
+# Repository secrets (Settings, Secrets and variables, Actions):
+#   WEAVIATE_URL, WEAVIATE_API_KEY            the cluster used by the live services (required)
+#   WEAVIATE_URL_2, WEAVIATE_API_KEY_2        a second cluster, for example the one used from a computer (optional)
+on:
+  schedule:
+    - cron: "41 5 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: keep-alive
+  cancel-in-progress: false
+
+jobs:
+  weaviate:
+    name: Weaviate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions: {}
+    env:
+      URL_1: ${{ secrets.WEAVIATE_URL }}
+      URL_2: ${{ secrets.WEAVIATE_URL_2 }}
+      CREDENTIAL_1: ${{ secrets.WEAVIATE_API_KEY }}
+      CREDENTIAL_2: ${{ secrets.WEAVIATE_API_KEY_2 }}
+      COLLECTION: WebsiteChunk
+    steps:
+      - name: Read from the clusters
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          # get <credential> <url> ...: prints the body, then the HTTP status on a last line.
+          get() {
+            local credential="$1"
+            shift
+            curl --silent --show-error --max-time 30 --write-out '\n%{http_code}' \
+              --header "Authorization: Bearer ${credential}" "$@"
+          }
+
+          # keep_alive <name> <url> <credential>: returns 1 when the schema request fails.
+          keep_alive() {
+            local name="$1" base="${2%/}" credential="$3" response status tenants tenant
+
+            case "${base}" in
+              http://* | https://*) ;;
+              *) base="https://${base}" ;;
+            esac
+            echo "::add-mask::${base}"
+
+            # 1. The schema: an authenticated call that must succeed.
+            response="$(get "${credential}" "${base}/v1/schema")"
+            status="${response##*$'\n'}"
+            if [ "${status}" != "200" ]; then
+              echo "::error::${name}: the schema request answered ${status}. Check the cluster in the Weaviate console (it may be suspended: resume it) and the secrets."
+              return 1
+            fi
+            echo "${name}: schema request ${status}"
+
+            # 2. One object from every active tenant of the collection (best effort: only warnings).
+            response="$(get "${credential}" "${base}/v1/schema/${COLLECTION}/tenants")"
+            status="${response##*$'\n'}"
+            if [ "${status}" != "200" ]; then
+              echo "::warning::${name}: the tenant list of ${COLLECTION} answered ${status}."
+              return 0
+            fi
+            tenants="$(printf '%s' "${response%$'\n'*}" | jq -r '.[] | select(.activityStatus == "ACTIVE" or .activityStatus == "HOT") | .name')"
+            for tenant in ${tenants}; do
+              response="$(get "${credential}" "${base}/v1/objects?class=${COLLECTION}&tenant=${tenant}&limit=1")"
+              status="${response##*$'\n'}"
+              echo "${name}: tenant ${tenant} ${status}"
+              if [ "${status}" != "200" ]; then
+                echo "::warning::${name}: reading the tenant ${tenant} answered ${status}."
+              fi
+            done
+          }
+
+          failed=0
+          if [ -n "${URL_1}" ] && [ -n "${CREDENTIAL_1}" ]; then
+            keep_alive "main cluster" "${URL_1}" "${CREDENTIAL_1}" || failed=1
+          else
+            echo "::error::The secrets WEAVIATE_URL and WEAVIATE_API_KEY are not set."
+            failed=1
+          fi
+          if [ -n "${URL_2}" ] && [ -n "${CREDENTIAL_2}" ]; then
+            keep_alive "second cluster" "${URL_2}" "${CREDENTIAL_2}" || failed=1
+          else
+            echo "No second cluster configured; skipped."
+          fi
+          exit "${failed}"
+
+  workflow:
+    name: Keep this workflow enabled
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write # enable this workflow again, which restarts GitHub's 60-day inactivity count
+    steps:
+      - name: Enable the workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: gh api --method PUT "repos/${REPOSITORY}/actions/workflows/keep-alive.yml/enable"
